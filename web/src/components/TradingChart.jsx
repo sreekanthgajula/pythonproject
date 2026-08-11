@@ -27,9 +27,50 @@ export default function TradingChart({ data }) {
         vertLines: { color: '#f0f3fa' },
         horzLines: { color: '#f0f3fa' },
       },
+      localization: {
+        timeFormatter: (time) => {
+          const timestamp = typeof time === 'number' ? time : Number(time);
+          if (isNaN(timestamp)) {
+            const date = new Date(time);
+            return date.toLocaleString('en-US', {
+              timeZone: 'Asia/Kolkata',
+              year: 'numeric',
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false
+            });
+          }
+          const date = new Date(timestamp * 1000);
+          return date.toLocaleString('en-US', {
+            timeZone: 'Asia/Kolkata',
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+          });
+        }
+      },
       timeScale: {
         borderColor: '#e0e3eb',
         timeVisible: true,
+        tickMarkFormatter: (time, tickMarkType, locale) => {
+          const date = new Date(time * 1000);
+          if (tickMarkType === 0) { // Year
+            return date.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric' });
+          }
+          if (tickMarkType === 1) { // Month
+            return date.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short' });
+          }
+          if (tickMarkType === 2) { // DayOfMonth
+            return date.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' });
+          }
+          // Time
+          return date.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+        }
       },
     });
 
