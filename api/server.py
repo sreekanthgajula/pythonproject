@@ -405,11 +405,23 @@ def get_chart_data(ticker: str):
         # This will calculate obv, tsi, tsi_signal, etc.
         # It returns (signal_dict, processed_df)
         _, processed_df = analyze_market_data(df)
-        
         processed_df = processed_df.fillna(0)
         
+        # Load benchmark history and initialize SignalValidator
+        bench_ticker = get_benchmark_ticker(ticker_clean)
+        bench_df = fetch_history(bench_ticker, start_date, end_date, interval="10minute")
+        
+        from scripts.signal_validator import SignalValidator
+        validator = SignalValidator(benchmark_ticker=bench_ticker)
+        
+        # Normalize timestamps to UTC to make comparison robust
+        if not processed_df.empty:
+            processed_df["timestamp_parsed"] = pd.to_datetime(processed_df["timestamp"], utc=True)
+        if not bench_df.empty:
+            bench_df["timestamp_parsed"] = pd.to_datetime(bench_df["timestamp"], utc=True)
+            
         chart_data = []
-        for _, row in processed_df.iterrows():
+        for idx_i, (_, row) in enumerate(processed_df.iterrows()):
             ts = row["timestamp"]
             if isinstance(ts, str):
                 ts = pd.to_datetime(ts)
@@ -421,7 +433,28 @@ def get_chart_data(ticker: str):
                 
             obv_cond = float(row.get("obv_zscore", 0.0)) > 2.0
             tsi_cond = (float(row.get("tsi_slope_2", 0.0)) > 2.5) or bool(row.get("tsi_crossed_above", False))
-            is_breakout = obv_cond and tsi_cond
+            
+            is_breakout = False
+            if obv_cond and tsi_cond:
+                # We need at least 10 bars of history for the validator (e.g. relative strength, volume ratio)
+                if idx_i >= 9:
+                    ticker_slice = processed_df.iloc[:idx_i+1]
+                    
+                    if not bench_df.empty:
+                        # Slice bench_df where timestamp_parsed <= current candle's timestamp_parsed
+                        bench_slice = bench_df[bench_df["timestamp_parsed"] <= row["timestamp_parsed"]]
+                    else:
+                        bench_slice = None
+                        
+                    signal_payload = {
+                        "ticker": ticker_clean,
+                        "price": float(row["close"])
+                    }
+                    
+                    is_valid, reason, confidence_score = validator.validate_signal(
+                        signal_payload, ticker_slice, bench_slice
+                    )
+                    is_breakout = is_valid
                 
             chart_data.append({
                 "time": epoch_seconds,
