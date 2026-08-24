@@ -99,6 +99,28 @@ def apply_validation_schemas(db) -> None:
         }
     }
 
+    # Define validator schema for timeframe rating tables (monthly, weekly, daily)
+    rating_table_schema = {
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": ["symbol", "rating", "reason"],
+            "properties": {
+                "symbol": {
+                    "bsonType": "string",
+                    "description": "must be a string stock symbol (e.g. WELCORP) and is required"
+                },
+                "rating": {
+                    "bsonType": ["double", "int", "string"],
+                    "description": "must be a numeric or text rating representing future potential and is required"
+                },
+                "reason": {
+                    "bsonType": "string",
+                    "description": "must be a string explaining the analysis reason and is required"
+                }
+            }
+        }
+    }
+
     existing_collections = db.list_collection_names()
 
     # Apply instruments validation
@@ -122,6 +144,22 @@ def apply_validation_schemas(db) -> None:
             logger.info("Applied schema validation to existing 'candles_10m' collection.")
     except Exception as e:
         logger.warning(f"Could not apply schema validation to 'candles_10m' collection: {e}")
+
+    # Apply monthly, weekly, daily rating tables validation & unique symbol index
+    for coll_name in ["monthly", "weekly", "daily"]:
+        try:
+            if coll_name not in existing_collections:
+                db.create_collection(coll_name, validator=rating_table_schema)
+                logger.info(f"Created '{coll_name}' collection with schema validation.")
+            else:
+                db.command("collMod", coll_name, validator=rating_table_schema)
+                logger.info(f"Applied schema validation to existing '{coll_name}' collection.")
+            
+            # Ensure unique index on symbol per rating collection
+            db[coll_name].create_index([("symbol", pymongo.ASCENDING)], unique=True)
+            logger.info(f"Unique index active on '{coll_name}.symbol'.")
+        except Exception as e:
+            logger.warning(f"Could not apply schema validation/indexing to '{coll_name}' collection: {e}")
 
 
 def setup_database(uri: str = None, db_name: str = "trading_data") -> MongoClient:

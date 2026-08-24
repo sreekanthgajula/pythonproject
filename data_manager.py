@@ -180,3 +180,64 @@ class DataManager:
         except Exception as e:
             logger.error(f"Error saving candle to MongoDB: {e}")
             return False
+
+    def save_stock_rating(self, table_name: str, symbol: str, rating: float | str, reason: str) -> bool:
+        """
+        Saves or updates a stock potential rating and reason in the specified timeframe table (monthly, weekly, daily).
+        
+        Args:
+            table_name (str): Target table name ('monthly', 'weekly', or 'daily').
+            symbol (str): Stock symbol (e.g. 'WELCORP').
+            rating (float | str): Rating indicating future potential.
+            reason (str): Analysis rationale or explanation.
+            
+        Returns:
+            bool: True if saved successfully, False otherwise.
+        """
+        valid_tables = {"monthly", "weekly", "daily"}
+        clean_table = table_name.strip().lower()
+        if clean_table not in valid_tables:
+            raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
+
+        clean_symbol = symbol.strip().upper()
+        doc = {
+            "symbol": clean_symbol,
+            "rating": rating,
+            "reason": reason,
+            "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
+        }
+
+        col = self.db[clean_table]
+        try:
+            # Upsert record based on unique symbol
+            col.update_one({"symbol": clean_symbol}, {"$set": doc}, upsert=True)
+            logger.info(f"Saved rating to '{clean_table}': Symbol={clean_symbol}, Rating={rating}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving stock rating to '{clean_table}': {e}")
+            return False
+
+    def get_stock_ratings(self, table_name: str, symbol: str = None) -> list[dict]:
+        """
+        Queries stock ratings and reasons from the specified timeframe table (monthly, weekly, daily).
+        
+        Args:
+            table_name (str): Target table name ('monthly', 'weekly', or 'daily').
+            symbol (str, optional): Specific stock symbol to filter by.
+            
+        Returns:
+            list[dict]: List of rating records.
+        """
+        valid_tables = {"monthly", "weekly", "daily"}
+        clean_table = table_name.strip().lower()
+        if clean_table not in valid_tables:
+            raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
+
+        col = self.db[clean_table]
+        query = {}
+        if symbol:
+            query["symbol"] = symbol.strip().upper()
+
+        records = list(col.find(query, {"_id": 0}))
+        return records
+
