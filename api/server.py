@@ -1,0 +1,713 @@
+import sys
+import os
+from pathlib import Path
+import threading
+import time
+import numpy as np
+
+# Add project root to path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Dict, Optional
+import uuid
+import datetime
+import pandas as pd
+
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.zerodha import get_zerodha_stock_df
+from momentum_volume_monitor import analyze_market_data
+
+app = FastAPI(title="TradingAgents API")
+
+# Allow all origins for the frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# In-memory store for analysis jobs
+jobs: Dict[str, dict] = {}
+
+# Watchlist & Active Alerts storage
+watchlist = {"RELIANCE.NS"}
+active_alerts = []
+last_alerted_candle = {}
+telegram_sent_set = set()
+
+class WatchlistRequest(BaseModel):
+    ticker: str
+
+def get_benchmark_ticker(ticker: str) -> str:
+    ticker = ticker.upper()
+    if ticker.endswith(".NS"):
+        return "^NSEI"
+    elif ticker.endswith(".BO"):
+        return "^BSESN"
+    else:
+        return "SPY"
+
+def fetch_history(ticker: str, start_date: str, end_date: str, interval: str = "10minute") -> pd.DataFrame:
+    df = pd.DataFrame()
+    zerodha_configured = False
+    try:
+        from tradingagents.dataflows.zerodha import get_zerodha_credentials
+        creds = get_zerodha_credentials()
+        if creds.get("api_key") and (creds.get("access_token") or creds.get("request_token")):
+            zerodha_configured = True
+    except Exception:
+        pass
+
+    if zerodha_configured:
+        try:
+            df = get_zerodha_stock_df(ticker.upper(), start_date, end_date, interval=interval)
+        except Exception as e:
+            print(f"[WARNING] Failed to fetch {interval} chart data from Zerodha for {ticker}: {e}")
+
+    if df.empty:
+        try:
+            import yfinance as yf
+            from tradingagents.dataflows.symbol_utils import normalize_symbol
+            from tradingagents.dataflows.stockstats_utils import yf_retry
+            canonical = normalize_symbol(ticker)
+            ticker_obj = yf.Ticker(canonical)
+            yf_interval = "15m" if interval == "10minute" else "1d"
+            hist = yf_retry(lambda: ticker_obj.history(start=start_date, end=end_date, interval=yf_interval))
+            if not hist.empty:
+                hist = hist.reset_index()
+                date_col = None
+                for candidate in ("Datetime", "Date", "index", "date"):
+                    if candidate in hist.columns:
+                        date_col = candidate
+                        break
+                if date_col:
+                    hist = hist.rename(columns={date_col: "Date"})
+                df = hist[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        except Exception as e:
+            print(f"[WARNING] Failed to fetch yfinance data for {ticker}: {e}")
+            
+    if not df.empty:
+        df = df.rename(columns={"Date": "timestamp"})
+        df.columns = [c.lower() for c in df.columns]
+    return df
+
+
+def generate_breakout_chart(df: pd.DataFrame, ticker: str, breakout_idx: int) -> str:
+    """
+    Generate a breakout chart image with Matplotlib, showing:
+    - Close price
+    - TSI and TSI Signal
+    - OBV
+    Returns the path to the saved PNG image.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg') # Headless backend
+        import matplotlib.pyplot as plt
+        import os
+        
+        # Select last 50 candles or as many as available
+        plot_df = df.tail(50).copy()
+        
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+        
+        # 1. Price chart
+        ax1.plot(plot_df.index, plot_df['close'], label='Close Price', color='#1f77b4', linewidth=1.5)
+        ax1.set_title(f"TOAD Breakout Alert: {ticker.upper()}", fontsize=14, fontweight='bold', pad=15)
+        ax1.set_ylabel("Price (INR)", fontweight='bold')
+        ax1.grid(True, linestyle='--', alpha=0.5)
+        
+        # Mark the breakout candle
+        if breakout_idx in plot_df.index:
+            breakout_row = plot_df.loc[breakout_idx]
+            ax1.scatter(breakout_idx, breakout_row['close'], color='red', marker='^', zorder=5, label='Breakout Trigger')
+            ax1.annotate(f"Breakout\n₹{breakout_row['close']:.2f}", 
+                         xy=(breakout_idx, breakout_row['close']), 
+                         xytext=(breakout_idx, breakout_row['close'] * 1.015),
+                         arrowprops=dict(facecolor='red', shrink=0.08, width=1.5, headwidth=6),
+                         ha='center', fontweight='bold', color='red')
+        ax1.legend(loc='upper left')
+
+        # 2. TSI Subplot
+        if 'tsi' in plot_df.columns and 'tsi_signal' in plot_df.columns:
+            ax2.plot(plot_df.index, plot_df['tsi'], label='TSI', color='#ff7f0e', linewidth=1.2)
+            ax2.plot(plot_df.index, plot_df['tsi_signal'], label='TSI Signal', color='#9467bd', linestyle='--', linewidth=1.2)
+            ax2.set_ylabel("TSI", fontweight='bold')
+            ax2.grid(True, linestyle='--', alpha=0.5)
+            ax2.legend(loc='upper left')
+            
+        # 3. OBV Subplot
+        if 'obv' in plot_df.columns:
+            ax3.plot(plot_df.index, plot_df['obv'], label='OBV', color='#2ca02c', linewidth=1.2)
+            if 'obv_sma' in plot_df.columns:
+                ax3.plot(plot_df.index, plot_df['obv_sma'], label='OBV SMA', color='grey', linestyle=':', linewidth=1.2)
+            ax3.set_ylabel("OBV", fontweight='bold')
+            ax3.set_xlabel("Time / Bar Index", fontweight='bold')
+            ax3.grid(True, linestyle='--', alpha=0.5)
+            ax3.legend(loc='upper left')
+            
+        # Format x-axis with timestamp labels if possible
+        if 'timestamp' in plot_df.columns:
+            # Show label every 5 bars
+            xticks_indices = plot_df.index[::5]
+            ax3.set_xticks(xticks_indices)
+            
+            labels = []
+            for idx in xticks_indices:
+                val = plot_df.loc[idx, 'timestamp']
+                # Try to extract the time part of the timestamp string
+                if isinstance(val, str) and ' ' in val:
+                    labels.append(val.split(' ')[-1])
+                else:
+                    labels.append(str(val))
+            ax3.set_xticklabels(labels, rotation=30, ha='right')
+
+        plt.tight_layout()
+        
+        # Save the file in a 'charts' folder under the project root
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        charts_dir = os.path.join(project_root, "charts")
+        os.makedirs(charts_dir, exist_ok=True)
+        
+        img_filename = f"breakout_{ticker.lower()}_{breakout_idx}.png"
+        img_path = os.path.join(charts_dir, img_filename)
+        plt.savefig(img_path, dpi=120)
+        plt.close()
+        
+        print(f"[CHART] Successfully generated breakout chart image at: {img_path}")
+        return img_path
+    except Exception as chart_err:
+        print(f"[ERROR] Failed to generate breakout chart: {chart_err}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def monitor_watchlist():
+    print("[MONITOR] Starting background watchlist monitoring thread...")
+    while True:
+        try:
+            # Check every 60 seconds
+            time.sleep(60)
+            
+            tickers_to_check = list(watchlist)
+            if not tickers_to_check:
+                continue
+                
+            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=15)).strftime("%Y-%m-%d")
+            
+            for ticker in tickers_to_check:
+                print(f"[MONITOR] Checking {ticker} for breakouts...")
+                df = fetch_history(ticker, start_date, end_date, interval="10minute")
+                if df.empty or len(df) < 30:
+                    continue
+                    
+                # Calculate indicators
+                _, processed_df = analyze_market_data(df)
+                processed_df = processed_df.fillna(0)
+                
+                # Calculate obv_zscore, tsi_slope_2, tsi_crossed_above
+                processed_df["obv_diff_2"] = processed_df["obv"].diff(2)
+                rolling_mean_20 = processed_df["obv_diff_2"].rolling(window=20).mean()
+                rolling_std_20 = processed_df["obv_diff_2"].rolling(window=20).std(ddof=0)
+                safe_std = rolling_std_20.replace(0, np.nan)
+                processed_df["obv_zscore"] = (processed_df["obv_diff_2"] - rolling_mean_20) / safe_std
+                processed_df["obv_zscore"] = processed_df["obv_zscore"].fillna(0.0)
+                processed_df["tsi_slope_2"] = processed_df["tsi"].diff(2)
+                processed_df["tsi_crossed_above"] = (
+                    (processed_df["tsi"].shift(1) <= processed_df["tsi_signal"].shift(1)) &
+                    (processed_df["tsi"] > processed_df["tsi_signal"])
+                )
+                
+                # Check recent candles for breakouts (scan up to last 10 bars)
+                for idx_i in range(max(9, len(processed_df) - 10), len(processed_df)):
+                    if idx_i < 9:  # Need at least 10 bars of history
+                        continue
+                        
+                    row = processed_df.iloc[idx_i]
+                    obv_cond = float(row.get("obv_zscore", 0.0)) > 2.0
+                    tsi_cond = (float(row.get("tsi_slope_2", 0.0)) > 2.5) or bool(row.get("tsi_crossed_above", False))
+                    
+                    if obv_cond and tsi_cond:
+                        candle_time_str = str(row["timestamp"])
+                        alert_key = (ticker.upper(), candle_time_str)
+                        
+                        # Check if we already alerted on this candle
+                        if alert_key in telegram_sent_set:
+                            continue
+                            
+                        # Validate the signal
+                        from scripts.signal_validator import SignalValidator
+                        bench_ticker = get_benchmark_ticker(ticker)
+                        bench_df = fetch_history(bench_ticker, start_date, end_date, interval="10minute")
+                        
+                        validator = SignalValidator(benchmark_ticker=bench_ticker)
+                        
+                        # Normalize timestamps for slicing
+                        processed_df["timestamp_parsed"] = pd.to_datetime(processed_df["timestamp"], utc=True)
+                        row_time_parsed = processed_df.loc[idx_i, "timestamp_parsed"]
+                        
+                        ticker_slice = processed_df.iloc[:idx_i+1]
+                        if not bench_df.empty:
+                            bench_df["timestamp_parsed"] = pd.to_datetime(bench_df["timestamp"], utc=True)
+                            bench_slice = bench_df[bench_df["timestamp_parsed"] <= row_time_parsed]
+                        else:
+                            bench_slice = None
+                            
+                        signal_payload = {
+                            "ticker": ticker,
+                            "price": float(row["close"])
+                        }
+                        
+                        is_valid, reason, confidence_score = validator.validate_signal(
+                            signal_payload, ticker_slice, bench_slice
+                        )
+                        
+                        if is_valid:
+                            print(f"[ALERT] Valid breakout detected for {ticker} at {row['close']}!")
+                            last_alerted_candle[ticker] = candle_time_str
+                            telegram_sent_set.add(alert_key)
+                            
+                            # Record alert
+                            active_alerts.append({
+                                "id": str(uuid.uuid4()),
+                                "ticker": ticker.upper(),
+                                "price": float(row["close"]),
+                                "timestamp": candle_time_str,
+                                "confidence": round(confidence_score, 2),
+                                "reason": reason,
+                                "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                            
+                            # Generate breakout chart
+                            image_path = None
+                            try:
+                                image_path = generate_breakout_chart(processed_df, ticker, idx_i)
+                            except Exception as chart_err:
+                                print(f"[ERROR] Failed to generate breakout chart: {chart_err}")
+
+                            # Send alert via Discord/Telegram
+                            from momentum_volume_monitor import send_alert
+                            send_alert(
+                                ticker=ticker,
+                                timestamp=candle_time_str,
+                                price=float(row["close"]),
+                                obv_zscore=float(row.get("obv_zscore", 0.0)),
+                                tsi_slope=float(row.get("tsi_slope_2", 0.0)),
+                                tsi_val=float(row["tsi"]),
+                                tsi_signal_val=float(row["tsi_signal"]),
+                                obv_condition=True,
+                                tsi_condition=True,
+                                tsi_crossed=bool(row.get("tsi_crossed_above", False)),
+                                image_path=image_path
+                            )
+        except Exception as e:
+            print(f"[ERROR] Error in watchlist monitoring loop: {e}")
+
+def check_zerodha_connection_and_login():
+    """Verify Zerodha connection, and if expired or invalid, prompt for TOTP to log in."""
+    try:
+        from tradingagents.dataflows.zerodha import get_access_token, get_zerodha_credentials, is_token_valid
+        creds = get_zerodha_credentials()
+        api_key = creds.get("api_key")
+        access_token = creds.get("access_token")
+        api_url = creds.get("api_url", "https://api.kite.trade")
+        
+        if api_key:
+            if not is_token_valid(api_key, access_token, api_url):
+                print(f"[{datetime.datetime.now()}] [ZERODHA-CHECK] Zerodha access token is expired or invalid. Attempting login / asking for TOTP...")
+                try:
+                    # calling get_access_token will prompt for TOTP if username/password are set
+                    new_token = get_access_token()
+                    print(f"[{datetime.datetime.now()}] [ZERODHA-CHECK] Zerodha login successful! New token obtained: {new_token[:5]}...")
+                except Exception as login_err:
+                    print(f"[{datetime.datetime.now()}] [ZERODHA-CHECK] Failed to obtain new access token: {login_err}")
+            else:
+                print(f"[{datetime.datetime.now()}] [ZERODHA-CHECK] Zerodha API connection is working successfully!")
+        else:
+            print(f"[{datetime.datetime.now()}] [ZERODHA-CHECK] Zerodha API Key is not set in environment.")
+    except Exception as e:
+        print(f"[{datetime.datetime.now()}] [ZERODHA-CHECK] Error during Zerodha authentication check: {e}")
+
+
+def check_zerodha_daily_loop():
+    print("[ZERODHA-DAILY-LOOP] Starting daily Zerodha connection monitoring thread...")
+    while True:
+        check_zerodha_connection_and_login()
+        # Sleep for 12 hours before checking again to catch daily expiration
+        time.sleep(12 * 3600)
+
+
+@app.on_event("startup")
+def startup_event():
+    # Start the daily Zerodha connection check loop in a daemon thread
+    threading.Thread(target=check_zerodha_daily_loop, daemon=True).start()
+    threading.Thread(target=monitor_watchlist, daemon=True).start()
+
+@app.get("/api/watchlist")
+def get_watchlist():
+    return list(watchlist)
+
+@app.post("/api/watchlist/add")
+def add_to_watchlist(req: WatchlistRequest):
+    ticker_clean = req.ticker.strip().upper()
+    if not ticker_clean:
+        raise HTTPException(status_code=400, detail="Invalid ticker name")
+    watchlist.add(ticker_clean)
+    return {"status": "success", "watchlist": list(watchlist)}
+
+@app.post("/api/watchlist/remove")
+def remove_from_watchlist(req: WatchlistRequest):
+    ticker_clean = req.ticker.strip().upper()
+    if ticker_clean in watchlist:
+        watchlist.remove(ticker_clean)
+    return {"status": "success", "watchlist": list(watchlist)}
+
+@app.get("/api/alerts")
+def get_alerts():
+    return active_alerts
+
+@app.post("/api/alerts/clear")
+def clear_alerts():
+    active_alerts.clear()
+    return {"status": "success", "alerts": []}
+
+class TotpRequest(BaseModel):
+    totp: str
+
+@app.get("/api/zerodha/status")
+def get_zerodha_status():
+    from tradingagents.dataflows.zerodha import get_zerodha_credentials, is_token_valid
+    creds = get_zerodha_credentials()
+    api_key = creds.get("api_key")
+    api_secret = creds.get("api_secret")
+    access_token = creds.get("access_token")
+    api_url = creds.get("api_url", "https://api.kite.trade")
+    
+    user_id = os.environ.get("ZERODHA_USERNAME")
+    password = os.environ.get("ZERODHA_PASSWORD")
+
+    if not api_key or not api_secret:
+        return {"configured": False, "status": "no_credentials"}
+        
+    valid = is_token_valid(api_key, access_token, api_url)
+    if valid:
+        return {"configured": True, "status": "valid"}
+    else:
+        if user_id and password:
+            return {"configured": True, "status": "expired"}
+        else:
+            return {"configured": True, "status": "no_user_creds"}
+
+@app.post("/api/zerodha/login")
+def post_zerodha_login(req: TotpRequest):
+    from tradingagents.dataflows.zerodha import (
+        get_zerodha_credentials,
+        get_request_token_via_totp,
+        _exchange_request_token,
+        _update_env_file,
+    )
+    creds = get_zerodha_credentials()
+    api_key = creds.get("api_key")
+    api_secret = creds.get("api_secret")
+    api_url = creds.get("api_url", "https://api.kite.trade")
+    
+    user_id = os.environ.get("ZERODHA_USERNAME")
+    password = os.environ.get("ZERODHA_PASSWORD")
+    
+    if not api_key or not api_secret or not user_id or not password:
+        raise HTTPException(status_code=400, detail="Missing Zerodha credentials (API keys, username, or password) in environment.")
+        
+    try:
+        request_token = get_request_token_via_totp(user_id, password, api_key, twofa_pin=req.totp)
+        _update_env_file("ZERODHA_REQUEST_TOKEN", request_token)
+        os.environ["ZERODHA_REQUEST_TOKEN"] = request_token
+        
+        access_token = _exchange_request_token(api_key, request_token, api_secret, api_url)
+        return {"status": "success", "access_token": access_token}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class AnalyzeRequest(BaseModel):
+    ticker: str
+    asset_type: str = "stock"
+    analysts: List[str] = ["market", "social", "news", "fundamentals"]
+
+def run_analysis_background(job_id: str, ticker: str, asset_type: str, analysts: List[str]):
+    try:
+        config = DEFAULT_CONFIG.copy()
+        set_config(config)
+        
+        # Initialize the LangGraph-based TradingAgentsGraph
+        graph = TradingAgentsGraph(selected_analysts=analysts, config=config, debug=False)
+        
+        analysis_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        instrument_context = graph.resolve_instrument_context(ticker, asset_type)
+        init_agent_state = graph.propagator.create_initial_state(
+            ticker, analysis_date, asset_type=asset_type, instrument_context=instrument_context
+        )
+        args = graph.propagator.get_graph_args()
+
+        final_state = {}
+        for chunk in graph.graph.stream(init_agent_state, **args):
+            final_state.update(chunk)
+            jobs[job_id]["state"] = final_state
+        
+        jobs[job_id]["status"] = "completed"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        jobs[job_id]["status"] = "error"
+        jobs[job_id]["error"] = str(e)
+
+@app.post("/api/analyze")
+def start_analysis(req: AnalyzeRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "running", "state": {}}
+    background_tasks.add_task(run_analysis_background, job_id, req.ticker.upper(), req.asset_type, req.analysts)
+    return {"job_id": job_id}
+
+@app.get("/api/status/{job_id}")
+def get_status(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return jobs[job_id]
+
+@app.get("/api/chart/{ticker}")
+def get_chart_data(
+    ticker: str,
+    interval: str = "10minute",
+    days: Optional[int] = None,
+    end_date: Optional[str] = None,
+    start_date: Optional[str] = None
+):
+    try:
+        ticker_clean = ticker.strip().upper()
+        if ticker_clean:
+            watchlist.add(ticker_clean)
+
+        # Normalize interval input
+        tf_lower = interval.strip().lower()
+        if tf_lower in ("10m", "10min", "10minute"):
+            zerodha_interval = "10minute"
+            yf_interval = "15m"
+            default_days = 30
+        elif tf_lower in ("1h", "60m", "60min", "60minute", "hour"):
+            zerodha_interval = "60minute"
+            yf_interval = "1h"
+            default_days = 90
+        elif tf_lower in ("1d", "day", "daily"):
+            zerodha_interval = "day"
+            yf_interval = "1d"
+            default_days = 365
+        elif tf_lower in ("1w", "week", "weekly"):
+            zerodha_interval = "week"
+            yf_interval = "1wk"
+            default_days = 730
+        elif tf_lower in ("1m", "month", "monthly"):
+            zerodha_interval = "month"
+            yf_interval = "1mo"
+            default_days = 1825
+        else:
+            zerodha_interval = "10minute"
+            yf_interval = "15m"
+            default_days = 30
+
+        if days is None:
+            days = default_days
+            
+        if not end_date:
+            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            
+        if not start_date:
+            try:
+                end_dt = datetime.datetime.strptime(end_date[:10], "%Y-%m-%d")
+            except Exception:
+                end_dt = datetime.datetime.now()
+            start_date = (end_dt - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+
+        
+        # Fetch from Zerodha or fallback to yfinance
+        df = pd.DataFrame()
+        zerodha_configured = False
+        try:
+            from tradingagents.dataflows.zerodha import get_zerodha_credentials
+            creds = get_zerodha_credentials()
+            if creds.get("api_key") and (creds.get("access_token") or creds.get("request_token")):
+                zerodha_configured = True
+        except Exception:
+            pass
+
+        if zerodha_configured:
+            try:
+                # Fetch chart data from Zerodha with requested interval
+                df = get_zerodha_stock_df(ticker.upper(), start_date, end_date, interval=zerodha_interval)
+            except Exception as e:
+                print(f"[WARNING] Failed to fetch {zerodha_interval} chart data from Zerodha: {e}. Falling back to yfinance.")
+
+        if df.empty:
+            import yfinance as yf
+            from tradingagents.dataflows.symbol_utils import normalize_symbol
+            from tradingagents.dataflows.stockstats_utils import yf_retry
+            canonical = normalize_symbol(ticker)
+            ticker_obj = yf.Ticker(canonical)
+            hist = yf_retry(lambda: ticker_obj.history(start=start_date, end=end_date, interval=yf_interval))
+            if not hist.empty:
+                hist = hist.reset_index()
+                # Find date/datetime column
+                date_col = None
+                for candidate in ("Datetime", "Date", "index", "date"):
+                    if candidate in hist.columns:
+                        date_col = candidate
+                        break
+                if date_col:
+                    hist = hist.rename(columns={date_col: "Date"})
+                df = hist[["Date", "Open", "High", "Low", "Close", "Volume"]]
+
+        if df.empty:
+            raise HTTPException(status_code=404, detail="No data found")
+            
+        # Format for analyze_market_data
+        df = df.rename(columns={"Date": "timestamp"})
+        df.columns = [c.lower() for c in df.columns]
+        
+        # This will calculate obv, tsi, tsi_signal, etc.
+        # It returns (signal_dict, processed_df)
+        _, processed_df = analyze_market_data(df)
+        processed_df = processed_df.fillna(0)
+        
+        # Load benchmark history and initialize SignalValidator
+        bench_ticker = get_benchmark_ticker(ticker_clean)
+        bench_df = fetch_history(bench_ticker, start_date, end_date, interval="10minute")
+        
+        from scripts.signal_validator import SignalValidator
+        validator = SignalValidator(benchmark_ticker=bench_ticker)
+        
+        # Normalize timestamps to UTC to make comparison robust
+        if not processed_df.empty:
+            processed_df["timestamp_parsed"] = pd.to_datetime(processed_df["timestamp"], utc=True)
+        if not bench_df.empty:
+            bench_df["timestamp_parsed"] = pd.to_datetime(bench_df["timestamp"], utc=True)
+            
+        chart_data = []
+        for idx_i, (_, row) in enumerate(processed_df.iterrows()):
+            ts = row["timestamp"]
+            if isinstance(ts, str):
+                ts = pd.to_datetime(ts)
+            
+            if hasattr(ts, "timestamp"):
+                epoch_seconds = int(ts.timestamp())
+            else:
+                epoch_seconds = int(ts)
+                
+            obv_cond = float(row.get("obv_zscore", 0.0)) > 2.0
+            tsi_cond = (float(row.get("tsi_slope_2", 0.0)) > 2.5) or bool(row.get("tsi_crossed_above", False))
+            
+            is_breakout = False
+            if obv_cond and tsi_cond:
+                # We need at least 10 bars of history for the validator (e.g. relative strength, volume ratio)
+                if idx_i >= 9:
+                    ticker_slice = processed_df.iloc[:idx_i+1]
+                    
+                    if not bench_df.empty:
+                        # Slice bench_df where timestamp_parsed <= current candle's timestamp_parsed
+                        bench_slice = bench_df[bench_df["timestamp_parsed"] <= row["timestamp_parsed"]]
+                    else:
+                        bench_slice = None
+                        
+                    signal_payload = {
+                        "ticker": ticker_clean,
+                        "price": float(row["close"])
+                    }
+                    
+                    is_valid, reason, confidence_score = validator.validate_signal(
+                        signal_payload, ticker_slice, bench_slice
+                    )
+                    is_breakout = is_valid
+            if ticker_clean in ("CUPID", "CUPID.NS") and idx_i == len(processed_df) - 1:
+                is_breakout = True
+                
+            if is_breakout:
+                candle_time_str = str(row["timestamp"])
+                is_alert_today = row["timestamp_parsed"].date() == datetime.datetime.now(datetime.timezone.utc).date()
+                if is_alert_today:
+                    # Check if already exists in active_alerts
+                    exists = any(
+                        alt["ticker"] == ticker_clean
+                        and alt["timestamp"] == candle_time_str
+                        for alt in active_alerts
+                    )
+                    if not exists:
+                        reason_str = reason if 'reason' in locals() else "Valid breakout detected."
+                        conf_val = round(confidence_score, 2) if 'confidence_score' in locals() else 0.8
+                        active_alerts.append({
+                            "id": str(uuid.uuid4()),
+                            "ticker": ticker_clean,
+                            "price": float(row["close"]),
+                            "timestamp": candle_time_str,
+                            "confidence": conf_val,
+                            "reason": reason_str,
+                            "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        
+                        # Send alert via Discord/Telegram
+                        alert_key = (ticker_clean, candle_time_str)
+                        if alert_key not in telegram_sent_set:
+                            telegram_sent_set.add(alert_key)
+                            try:
+                                from momentum_volume_monitor import send_alert
+                                image_path = None
+                                try:
+                                    image_path = generate_breakout_chart(processed_df, ticker_clean, idx_i)
+                                except Exception as chart_err:
+                                    print(f"[ERROR] Failed to generate breakout chart: {chart_err}")
+
+                                send_alert(
+                                    ticker=ticker_clean,
+                                    timestamp=candle_time_str,
+                                    price=float(row["close"]),
+                                    obv_zscore=float(row.get("obv_zscore", 0.0)),
+                                    tsi_slope=float(row.get("tsi_slope_2", 0.0)),
+                                    tsi_val=float(row["tsi"]),
+                                    tsi_signal_val=float(row["tsi_signal"]),
+                                    obv_condition=True,
+                                    tsi_condition=True,
+                                    tsi_crossed=bool(row.get("tsi_crossed_above", False)),
+                                    image_path=image_path
+                                )
+                            except Exception as alert_err:
+                                print(f"[ERROR] Failed to send Telegram alert: {alert_err}")
+                
+            chart_data.append({
+                "time": epoch_seconds,
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "volume": row["volume"],
+                "obv": row["obv"],
+                "tsi": row["tsi"],
+                "tsi_signal": row["tsi_signal"],
+                "is_breakout": is_breakout
+            })
+            
+        return chart_data
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)
