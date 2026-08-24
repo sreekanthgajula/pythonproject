@@ -1,12 +1,15 @@
 """
 ===============================================================================
-GROK API & CHARTINK SCREENER INTEGRATION
+GROK API & CHARTINK SCREENER PIPELINE (WITH DB PERSISTENCE)
 ===============================================================================
 Description:
-    1. Extracts the top 20 stock symbols from a Chartink screener link
-       (sorted by % price increase).
-    2. Formats the list of symbols and passes them to xAI's Grok API
-       (https://api.x.ai/v1/chat/completions) for AI market analysis.
+    1. Extracts the top 20 stock symbols from Chartink screener.
+    2. Sends the symbols to Grok API with the context:
+       "I will list stock symbols. I want you to judge which stock has higher
+        potential based on its future prediction, current spike in volume, and news."
+    3. Parses the Grok JSON response (stock name, rating, reason).
+    4. Automatically saves the structured ratings into your MongoDB database table
+       ('monthly', 'weekly', or 'daily').
 ===============================================================================
 """
 
@@ -14,6 +17,7 @@ import os
 import sys
 import json
 import logging
+import re
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
@@ -23,6 +27,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 from scripts.chartink_fetcher import get_chartink_sorted_stocks
+from data_manager import DataManager
 
 # Load .env variables
 load_dotenv(dotenv_path=project_root / ".env")
@@ -31,15 +36,8 @@ logger = logging.getLogger(__name__)
 
 def get_chartink_symbols(screener_url: str = "https://chartink.com/screener/true-strength-monthly", top_n: int = 20) -> list[str]:
     """
-    Fetches the screener result from Chartink, sorts by % gain, and extracts
+    Fetches screener results from Chartink, sorts by % gain, and extracts
     just the symbol list (e.g. ['WELCORP', 'AEROFLEX', 'KERNEX', ...]).
-    
-    Args:
-        screener_url (str): Chartink screener URL.
-        top_n (int): Number of top symbols to extract. Default 20.
-        
-    Returns:
-        list[str]: Clean list of stock ticker symbols.
     """
     stocks = get_chartink_sorted_stocks(screener_url=screener_url, top_n=top_n, sort_by="per_chg", reverse=True)
     symbols = []
@@ -49,46 +47,39 @@ def get_chartink_symbols(screener_url: str = "https://chartink.com/screener/true
             symbols.append(str(sym).upper())
     return symbols
 
-def analyze_symbols_with_grok(
+def analyze_and_rate_with_grok(
     symbols: list[str],
+    timeframe_table: str = "monthly",
     api_key: str = None,
-    model: str = "grok-2-latest",
-    custom_prompt: str = None
-) -> str:
+    model: str = "grok-2-latest"
+) -> list[dict]:
     """
-    Sends the list of stock symbols to xAI Grok API for AI technical/fundamental analysis.
-    
-    Args:
-        symbols (list[str]): List of stock symbols (e.g. ['WELCORP', 'AEROFLEX', ...]).
-        api_key (str, optional): Grok/xAI API key. Defaults to GROK_API_KEY or XAI_API_KEY in .env.
-        model (str, optional): Grok model name. Defaults to 'grok-2-latest'.
-        custom_prompt (str, optional): Custom prompt instructions for Grok.
-        
-    Returns:
-        str: AI analysis response from Grok.
+    Passes symbols to Grok API using your prompt context, receives structured rating & reason,
+    and inserts records directly into the specified database table ('monthly', 'weekly', 'daily').
     """
-    # Fallback to env keys
     grok_key = api_key or os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
     if not grok_key:
         raise ValueError(
-            "Grok API Key not found! Please set GROK_API_KEY or XAI_API_KEY in your .env file, "
-            "or pass api_key parameter to analyze_symbols_with_grok()."
+            "Grok API Key not found! Please set GROK_API_KEY or XAI_API_KEY in your .env file."
         )
 
     symbols_str = ", ".join(symbols)
 
-    if not custom_prompt:
-        custom_prompt = (
-            f"You are an expert quantitative technical analyst. Here are 20 high-momentum stock symbols "
-            f"scanned from Chartink based on True Strength Index (TSI) and Volume Flow:\n\n"
-            f"Symbols: {symbols_str}\n\n"
-            f"Please perform a rapid analysis on these stocks and provide:\n"
-            f"1. A breakdown of the top 3 highest probability breakout setups.\n"
-            f"2. Key technical drivers (TSI momentum, OBV volume accumulation, key resistance levels).\n"
-            f"3. Risk management guidelines (recommended Stop-Loss % and Risk-to-Reward targets)."
-        )
+    prompt = (
+        f"Here is a list of stock symbols: {symbols_str}.\n"
+        f"I want you to judge which stock has higher potential based on its future prediction, "
+        f"current spike in volume, and news.\n\n"
+        f"Return your output strictly as a JSON array of objects. Do not include markdown code block quotes. "
+        f"Each object MUST contain these exact keys:\n"
+        f"  - \"symbol\": stock ticker (e.g. \"WELCORP\")\n"
+        f"  - \"rating\": numeric rating from 1.0 to 5.0 (where 5.0 is highest potential)\n"
+        f"  - \"reason\": concise explanation evaluating volume spike, news, and future potential\n\n"
+        f"Example JSON output format:\n"
+        f"[\n"
+        f"  {{\"symbol\": \"WELCORP\", \"rating\": 4.8, \"reason\": \"Strong volume spike of +15.3% with bullish order pipeline.\"}}\n"
+        f"]"
+    )
 
-    # Grok API Endpoint (xAI / OpenAI compatible)
     url = "https://api.x.ai/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -100,11 +91,11 @@ def analyze_symbols_with_grok(
         "messages": [
             {
                 "role": "system",
-                "content": "You are Grok, an advanced AI financial analyst specializing in stock market momentum, volume flow, and technical breakouts."
+                "content": "You are Grok, an expert financial market AI that evaluates stock potential and outputs raw structured JSON."
             },
             {
                 "role": "user",
-                "content": custom_prompt
+                "content": prompt
             }
         ],
         "temperature": 0.2
@@ -113,31 +104,60 @@ def analyze_symbols_with_grok(
     print(f"Sending {len(symbols)} symbols to Grok API ({model})...\n")
     response = requests.post(url, headers=headers, json=payload)
 
-    if response.status_code == 200:
-        res_json = response.json()
-        content = res_json["choices"][0]["message"]["content"]
-        return content
+    if response.status_code != 200:
+        logger.error(f"Grok API request failed: {response.status_code} - {response.text}")
+        return []
+
+    res_json = response.json()
+    raw_content = res_json["choices"][0]["message"]["content"].strip()
+
+    # Extract JSON substring if wrapped in markdown ```json ... ```
+    json_match = re.search(r"\[\s*\{.*\}\s*\]", raw_content, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(0)
     else:
-        err_msg = f"Grok API request failed with status {response.status_code}: {response.text}"
-        logger.error(err_msg)
-        return err_msg
+        json_str = raw_content
+
+    try:
+        ratings_data = json.loads(json_str)
+    except Exception as e:
+        logger.error(f"Failed to parse Grok JSON response: {e}\nRaw text: {raw_content[:300]}")
+        return []
+
+    # Insert/update parsed ratings into MongoDB database table
+    try:
+        dm = DataManager()
+        saved_count = 0
+        for item in ratings_data:
+            sym = item.get("symbol")
+            rating = item.get("rating")
+            reason = item.get("reason")
+            if sym and rating and reason:
+                if dm.save_stock_rating(table_name=timeframe_table, symbol=sym, rating=rating, reason=reason):
+                    saved_count += 1
+        print(f"\nSuccessfully inserted {saved_count} stock ratings into '{timeframe_table}' database table!")
+    except Exception as db_err:
+        logger.error(f"Database insertion failed: {db_err}")
+
+    return ratings_data
 
 if __name__ == "__main__":
     screener_link = "https://chartink.com/screener/true-strength-monthly"
-    print(f"=== Chartink + Grok API Pipeline ===")
+    print(f"=== Chartink + Grok API + DB Persistence Pipeline ===")
     
-    # 1. Grab symbols column from Chartink screener
+    # 1. Grab symbols from Chartink screener
     symbols = get_chartink_symbols(screener_link, top_n=20)
     print(f"Extracted {len(symbols)} symbols from Chartink:")
     print(symbols)
-    print("-" * 60)
+    print("-" * 70)
     
-    # 2. Check if Grok API Key is available before attempting API call
+    # 2. Call Grok API and persist to 'monthly' table if key present
     grok_key = os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
     if grok_key:
-        analysis = analyze_symbols_with_grok(symbols, api_key=grok_key)
-        print("\n=== Grok AI Analysis Result ===")
-        print(analysis)
+        ratings = analyze_and_rate_with_grok(symbols, timeframe_table="monthly", api_key=grok_key)
+        print("\n=== Parsed Ratings & Database Status ===")
+        for r in ratings[:10]:
+            print(f"Symbol: {r.get('symbol'):<12} | Rating: {r.get('rating'):<5} | Reason: {r.get('reason')}")
     else:
-        print("\n[NOTE] To execute live Grok API analysis, add your key to .env:")
+        print("\n[NOTE] To execute live Grok API analysis & save to your DB table, add your key to .env:")
         print("GROK_API_KEY=xai-xxxxxxxxxxxxxxxxxxxxxxxx")
