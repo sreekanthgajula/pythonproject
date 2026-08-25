@@ -1,15 +1,15 @@
 """
 ===============================================================================
-GROK API & CHARTINK SCREENER PIPELINE (WITH DB PERSISTENCE)
+MULTI-TIMEFRAME GROK API & CHARTINK SCREENER PIPELINE
 ===============================================================================
 Description:
-    1. Extracts the top 20 stock symbols from Chartink screener.
-    2. Sends the symbols to Grok API with the context:
+    1. Fetches top 20 stock symbols for Monthly, Weekly, and Daily Chartink screeners.
+    2. Sends symbols for each timeframe to Grok API with the context:
        "I will list stock symbols. I want you to judge which stock has higher
         potential based on its future prediction, current spike in volume, and news."
-    3. Parses the Grok JSON response (stock name, rating, reason).
-    4. Automatically saves the structured ratings into your MongoDB database table
-       ('monthly', 'weekly', or 'daily').
+    3. Parses structured JSON (symbol, rating, reason) returned by Grok.
+    4. Automatically saves results into their respective MongoDB database tables
+       ('monthly', 'weekly', and 'daily').
 ===============================================================================
 """
 
@@ -34,10 +34,17 @@ load_dotenv(dotenv_path=project_root / ".env")
 
 logger = logging.getLogger(__name__)
 
-def get_chartink_symbols(screener_url: str = "https://chartink.com/screener/true-strength-monthly", top_n: int = 20) -> list[str]:
+# Configured Chartink Screener URLs for each timeframe
+SCREENER_URLS = {
+    "monthly": "https://chartink.com/screener/true-strength-monthly",
+    "weekly": "https://chartink.com/screener/true-strength-weekly",
+    "daily": "https://chartink.com/screener/copy-true-strength-indicator-greater-than-number-25-246"
+}
+
+def get_chartink_symbols(screener_url: str, top_n: int = 20) -> list[str]:
     """
     Fetches screener results from Chartink, sorts by % gain, and extracts
-    just the symbol list (e.g. ['WELCORP', 'AEROFLEX', 'KERNEX', ...]).
+    just the symbol list (e.g. ['BTML', 'SIGACHI', 'APOLLOPIPE', ...]).
     """
     stocks = get_chartink_sorted_stocks(screener_url=screener_url, top_n=top_n, sort_by="per_chg", reverse=True)
     symbols = []
@@ -49,7 +56,7 @@ def get_chartink_symbols(screener_url: str = "https://chartink.com/screener/true
 
 def analyze_and_rate_with_grok(
     symbols: list[str],
-    timeframe_table: str = "monthly",
+    timeframe_table: str,
     api_key: str = None,
     model: str = "grok-2-latest"
 ) -> list[dict]:
@@ -66,17 +73,17 @@ def analyze_and_rate_with_grok(
     symbols_str = ", ".join(symbols)
 
     prompt = (
-        f"Here is a list of stock symbols: {symbols_str}.\n"
+        f"Here is a list of stock symbols for the {timeframe_table.upper()} timeframe: {symbols_str}.\n"
         f"I want you to judge which stock has higher potential based on its future prediction, "
         f"current spike in volume, and news.\n\n"
         f"Return your output strictly as a JSON array of objects. Do not include markdown code block quotes. "
         f"Each object MUST contain these exact keys:\n"
-        f"  - \"symbol\": stock ticker (e.g. \"WELCORP\")\n"
+        f"  - \"symbol\": stock ticker (e.g. \"SIGACHI\")\n"
         f"  - \"rating\": numeric rating from 1.0 to 5.0 (where 5.0 is highest potential)\n"
         f"  - \"reason\": concise explanation evaluating volume spike, news, and future potential\n\n"
         f"Example JSON output format:\n"
         f"[\n"
-        f"  {{\"symbol\": \"WELCORP\", \"rating\": 4.8, \"reason\": \"Strong volume spike of +15.3% with bullish order pipeline.\"}}\n"
+        f"  {{\"symbol\": \"SIGACHI\", \"rating\": 4.7, \"reason\": \"Strong volume spike of +11.2% with bullish technical momentum.\"}}\n"
         f"]"
     )
 
@@ -91,7 +98,7 @@ def analyze_and_rate_with_grok(
         "messages": [
             {
                 "role": "system",
-                "content": "You are Grok, an expert financial market AI that evaluates stock potential and outputs raw structured JSON."
+                "content": f"You are Grok, an expert financial market AI evaluating stock potential for the {timeframe_table.upper()} timeframe. Output raw structured JSON."
             },
             {
                 "role": "user",
@@ -101,11 +108,11 @@ def analyze_and_rate_with_grok(
         "temperature": 0.2
     }
 
-    print(f"Sending {len(symbols)} symbols to Grok API ({model})...\n")
+    print(f"[{timeframe_table.upper()}] Sending {len(symbols)} symbols to Grok API ({model})...")
     response = requests.post(url, headers=headers, json=payload)
 
     if response.status_code != 200:
-        logger.error(f"Grok API request failed: {response.status_code} - {response.text}")
+        logger.error(f"Grok API request failed for {timeframe_table}: {response.status_code} - {response.text}")
         return []
 
     res_json = response.json()
@@ -121,10 +128,10 @@ def analyze_and_rate_with_grok(
     try:
         ratings_data = json.loads(json_str)
     except Exception as e:
-        logger.error(f"Failed to parse Grok JSON response: {e}\nRaw text: {raw_content[:300]}")
+        logger.error(f"Failed to parse Grok JSON response for {timeframe_table}: {e}\nRaw text: {raw_content[:300]}")
         return []
 
-    # Insert/update parsed ratings into MongoDB database table
+    # Insert/update parsed ratings into specified database table ('monthly', 'weekly', or 'daily')
     try:
         dm = DataManager()
         saved_count = 0
@@ -135,29 +142,38 @@ def analyze_and_rate_with_grok(
             if sym and rating and reason:
                 if dm.save_stock_rating(table_name=timeframe_table, symbol=sym, rating=rating, reason=reason):
                     saved_count += 1
-        print(f"\nSuccessfully inserted {saved_count} stock ratings into '{timeframe_table}' database table!")
+        print(f"[{timeframe_table.upper()}] Successfully saved {saved_count} stock ratings into '{timeframe_table}' database table!\n")
     except Exception as db_err:
-        logger.error(f"Database insertion failed: {db_err}")
+        logger.error(f"Database insertion failed for {timeframe_table}: {db_err}")
 
     return ratings_data
 
+def run_all_screeners(api_key: str = None, top_n: int = 20):
+    """
+    Executes the full automated pipeline across Monthly, Weekly, and Daily screeners.
+    """
+    grok_key = api_key or os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
+    results = {}
+    
+    for timeframe, screener_url in SCREENER_URLS.items():
+        print(f"\n=======================================================")
+        print(f" PROCESSING TIMEFRAME: {timeframe.upper()}")
+        print(f" URL: {screener_url}")
+        print(f"=======================================================")
+        
+        symbols = get_chartink_symbols(screener_url, top_n=top_n)
+        print(f"Extracted {len(symbols)} symbols: {symbols}")
+        
+        if grok_key:
+            ratings = analyze_and_rate_with_grok(symbols, timeframe_table=timeframe, api_key=grok_key)
+            results[timeframe] = ratings
+        else:
+            print(f"[NOTE] Add GROK_API_KEY to .env to execute live Grok rating & save to '{timeframe}' table.")
+            results[timeframe] = symbols
+            
+    return results
+
 if __name__ == "__main__":
-    screener_link = "https://chartink.com/screener/true-strength-monthly"
-    print(f"=== Chartink + Grok API + DB Persistence Pipeline ===")
-    
-    # 1. Grab symbols from Chartink screener
-    symbols = get_chartink_symbols(screener_link, top_n=20)
-    print(f"Extracted {len(symbols)} symbols from Chartink:")
-    print(symbols)
-    print("-" * 70)
-    
-    # 2. Call Grok API and persist to 'monthly' table if key present
+    print("=== Multi-Timeframe Chartink + Grok API + DB Pipeline ===")
     grok_key = os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
-    if grok_key:
-        ratings = analyze_and_rate_with_grok(symbols, timeframe_table="monthly", api_key=grok_key)
-        print("\n=== Parsed Ratings & Database Status ===")
-        for r in ratings[:10]:
-            print(f"Symbol: {r.get('symbol'):<12} | Rating: {r.get('rating'):<5} | Reason: {r.get('reason')}")
-    else:
-        print("\n[NOTE] To execute live Grok API analysis & save to your DB table, add your key to .env:")
-        print("GROK_API_KEY=xai-xxxxxxxxxxxxxxxxxxxxxxxx")
+    run_all_screeners(api_key=grok_key, top_n=20)
