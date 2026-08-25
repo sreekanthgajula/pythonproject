@@ -200,11 +200,17 @@ def run_all_screeners(api_key: str = None, top_n: int = 20):
         "daily": final_daily
     }
 
-    # 3. Process with Grok API & insert into DB
+    # 3. Database Table Comparison Deduplication & Grok API Processing
     results = {}
+    dm = None
+    try:
+        dm = DataManager()
+    except Exception as e:
+        logger.warning(f"Could not connect to DataManager for DB comparison: {e}")
+
     for timeframe, symbols in deduped_symbols.items():
         print(f"\n=======================================================")
-        print(f" PROCESSING TIMEFRAME: {timeframe.upper()} ({len(symbols)} unique symbols)")
+        print(f" PROCESSING TIMEFRAME: {timeframe.upper()}")
         print(f"=======================================================")
         
         if not symbols:
@@ -212,17 +218,40 @@ def run_all_screeners(api_key: str = None, top_n: int = 20):
             results[timeframe] = []
             continue
 
+        # DB Deduplication: Filter out symbols already present in target DB table
+        db_existing = set()
+        if dm:
+            try:
+                records = dm.get_stock_ratings(timeframe)
+                db_existing = {r["symbol"].upper() for r in records if "symbol" in r}
+            except Exception as db_err:
+                logger.warning(f"Failed to fetch existing records from '{timeframe}' table: {db_err}")
+
+        new_symbols = [s for s in symbols if s not in db_existing]
+        db_duplicates = [s for s in symbols if s in db_existing]
+
+        print(f"[{timeframe.upper()}] Screener symbols: {len(symbols)}")
+        if db_duplicates:
+            print(f"[{timeframe.upper()}] DB Table Duplicates (Skipped): {db_duplicates}")
+        print(f"[{timeframe.upper()}] NEW Symbols to analyze with Grok ({len(new_symbols)}): {new_symbols}")
+
+        if not new_symbols:
+            print(f"[{timeframe.upper()}] All symbols already exist in '{timeframe}' database table. Skipping Grok API call.")
+            results[timeframe] = []
+            continue
+
         if grok_key:
-            ratings = analyze_and_rate_with_grok(symbols, timeframe_table=timeframe, api_key=grok_key)
+            ratings = analyze_and_rate_with_grok(new_symbols, timeframe_table=timeframe, api_key=grok_key)
             results[timeframe] = ratings
         else:
             print(f"[NOTE] Add GROK_API_KEY to .env to execute live Grok rating & save to '{timeframe}' table.")
-            results[timeframe] = symbols
+            results[timeframe] = new_symbols
 
     return results
 
 if __name__ == "__main__":
-    print("=== Multi-Timeframe Chartink + Grok API + DB Pipeline (With Priority Deduplication) ===")
+    print("=== Multi-Timeframe Chartink + Grok API + DB Pipeline (With Priority & DB Deduplication) ===")
     grok_key = os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
     run_all_screeners(api_key=grok_key, top_n=20)
+
 
