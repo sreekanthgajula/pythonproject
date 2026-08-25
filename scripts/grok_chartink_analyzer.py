@@ -151,29 +151,78 @@ def analyze_and_rate_with_grok(
 def run_all_screeners(api_key: str = None, top_n: int = 20):
     """
     Executes the full automated pipeline across Monthly, Weekly, and Daily screeners.
+    Applies strict priority deduplication (Monthly > Weekly > Daily):
+      - Monthly keeps all top_n symbols.
+      - Weekly removes any symbols already present in Monthly.
+      - Daily removes any symbols already present in Monthly or Weekly.
     """
     grok_key = api_key or os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
-    results = {}
     
-    for timeframe, screener_url in SCREENER_URLS.items():
+    print("\n=======================================================")
+    print(" 1. FETCHING & DEDUPLICATING SCREENER SYMBOLS")
+    print(" Priority Rule: MONTHLY > WEEKLY > DAILY")
+    print("=======================================================")
+    
+    # 1. Fetch raw symbols from Chartink screeners
+    raw_monthly = get_chartink_symbols(SCREENER_URLS["monthly"], top_n=top_n)
+    raw_weekly = get_chartink_symbols(SCREENER_URLS["weekly"], top_n=top_n)
+    raw_daily = get_chartink_symbols(SCREENER_URLS["daily"], top_n=top_n)
+
+    # 2. Priority Deduplication
+    seen_symbols = set()
+
+    # Monthly keeps highest priority
+    final_monthly = list(raw_monthly)
+    seen_symbols.update(final_monthly)
+
+    # Weekly filters out symbols in Monthly
+    final_weekly = [s for s in raw_weekly if s not in seen_symbols]
+    removed_weekly = [s for s in raw_weekly if s in seen_symbols]
+    seen_symbols.update(final_weekly)
+
+    # Daily filters out symbols in Monthly or Weekly
+    final_daily = [s for s in raw_daily if s not in seen_symbols]
+    removed_daily = [s for s in raw_daily if s in seen_symbols]
+
+    print(f"\n[MONTHLY] ({len(final_monthly)} symbols): {final_monthly}")
+    
+    print(f"\n[WEEKLY]  ({len(final_weekly)} symbols, {len(removed_weekly)} duplicates removed): {final_weekly}")
+    if removed_weekly:
+        print(f"          Duplicates removed (kept in Monthly): {removed_weekly}")
+
+    print(f"\n[DAILY]   ({len(final_daily)} symbols, {len(removed_daily)} duplicates removed): {final_daily}")
+    if removed_daily:
+        print(f"          Duplicates removed (kept in Monthly/Weekly): {removed_daily}")
+
+    deduped_symbols = {
+        "monthly": final_monthly,
+        "weekly": final_weekly,
+        "daily": final_daily
+    }
+
+    # 3. Process with Grok API & insert into DB
+    results = {}
+    for timeframe, symbols in deduped_symbols.items():
         print(f"\n=======================================================")
-        print(f" PROCESSING TIMEFRAME: {timeframe.upper()}")
-        print(f" URL: {screener_url}")
+        print(f" PROCESSING TIMEFRAME: {timeframe.upper()} ({len(symbols)} unique symbols)")
         print(f"=======================================================")
         
-        symbols = get_chartink_symbols(screener_url, top_n=top_n)
-        print(f"Extracted {len(symbols)} symbols: {symbols}")
-        
+        if not symbols:
+            print(f"[{timeframe.upper()}] No unique symbols to analyze.")
+            results[timeframe] = []
+            continue
+
         if grok_key:
             ratings = analyze_and_rate_with_grok(symbols, timeframe_table=timeframe, api_key=grok_key)
             results[timeframe] = ratings
         else:
             print(f"[NOTE] Add GROK_API_KEY to .env to execute live Grok rating & save to '{timeframe}' table.")
             results[timeframe] = symbols
-            
+
     return results
 
 if __name__ == "__main__":
-    print("=== Multi-Timeframe Chartink + Grok API + DB Pipeline ===")
+    print("=== Multi-Timeframe Chartink + Grok API + DB Pipeline (With Priority Deduplication) ===")
     grok_key = os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
     run_all_screeners(api_key=grok_key, top_n=20)
+
