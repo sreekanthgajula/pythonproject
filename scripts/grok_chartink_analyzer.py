@@ -143,6 +143,14 @@ def analyze_and_rate_with_grok(
                 if dm.save_stock_rating(table_name=timeframe_table, symbol=sym, rating=rating, reason=reason):
                     saved_count += 1
         print(f"[{timeframe_table.upper()}] Successfully saved {saved_count} stock ratings into '{timeframe_table}' database table!\n")
+        
+        # Automatically set Zerodha 1% breakout alerts above recent high
+        try:
+            from scripts.zerodha_alert_manager import setup_alerts_for_symbols
+            setup_alerts_for_symbols(symbols, timeframe=timeframe_table)
+        except Exception as alert_err:
+            logger.error(f"Failed to setup Zerodha alerts for {timeframe_table}: {alert_err}")
+
     except Exception as db_err:
         logger.error(f"Database insertion failed for {timeframe_table}: {db_err}")
 
