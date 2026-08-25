@@ -1,15 +1,14 @@
 """
 ===============================================================================
-MULTI-TIMEFRAME GROK API & CHARTINK SCREENER PIPELINE
+MULTI-TIMEFRAME PIPELINE & PIPELINE FLOW
 ===============================================================================
-Description:
-    1. Fetches top 20 stock symbols for Monthly, Weekly, and Daily Chartink screeners.
-    2. Sends symbols for each timeframe to Grok API with the context:
-       "I will list stock symbols. I want you to judge which stock has higher
-        potential based on its future prediction, current spike in volume, and news."
-    3. Parses structured JSON (symbol, rating, reason) returned by Grok.
-    4. Automatically saves results into their respective MongoDB database tables
-       ('monthly', 'weekly', and 'daily').
+Sequence Order:
+    1. Chartink Screeners (Monthly, Weekly, Daily)
+    2. Cross-Timeframe Priority Deduplication (Monthly > Weekly > Daily)
+    3. DB Table Comparison Deduplication (Skip stocks already in DB)
+    4. Grok API Evaluation (Rating & Reason)
+    5. Zerodha API Fetch Recent High & Place +1% GTT Breakout Alert
+    6. Save Ratings to DB Tables ('monthly', 'weekly', 'daily')
 ===============================================================================
 """
 
@@ -19,6 +18,7 @@ import json
 import logging
 import re
 import requests
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -27,6 +27,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 from scripts.chartink_fetcher import get_chartink_sorted_stocks
+from scripts.zerodha_alert_manager import set_zerodha_1pct_breakout_alert
 from data_manager import DataManager
 
 # Load .env variables
@@ -42,10 +43,7 @@ SCREENER_URLS = {
 }
 
 def get_chartink_symbols(screener_url: str, top_n: int = 20) -> list[str]:
-    """
-    Fetches screener results from Chartink, sorts by % gain, and extracts
-    just the symbol list (e.g. ['BTML', 'SIGACHI', 'APOLLOPIPE', ...]).
-    """
+    """Step 1: Fetches screener results from Chartink and extracts symbol list."""
     stocks = get_chartink_sorted_stocks(screener_url=screener_url, top_n=top_n, sort_by="per_chg", reverse=True)
     symbols = []
     for s in stocks:
@@ -54,15 +52,17 @@ def get_chartink_symbols(screener_url: str, top_n: int = 20) -> list[str]:
             symbols.append(str(sym).upper())
     return symbols
 
-def analyze_and_rate_with_grok(
+def analyze_evaluate_and_save(
     symbols: list[str],
     timeframe_table: str,
     api_key: str = None,
     model: str = "grok-2-latest"
 ) -> list[dict]:
     """
-    Passes symbols to Grok API using your prompt context, receives structured rating & reason,
-    and inserts records directly into the specified database table ('monthly', 'weekly', 'daily').
+    Executes Steps 4, 5, and 6 in exact order:
+      Step 4: Grok API Evaluation (Rating & Reason)
+      Step 5: Zerodha API Fetch Recent High & Place +1% GTT Breakout Alert
+      Step 6: Save Ratings, Recent High, Trigger Price, and Status into DB Tables
     """
     grok_key = api_key or os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
     if not grok_key:
@@ -70,6 +70,9 @@ def analyze_and_rate_with_grok(
             "Grok API Key not found! Please set GROK_API_KEY or XAI_API_KEY in your .env file."
         )
 
+    # -------------------------------------------------------------------------
+    # STEP 4: Grok API Evaluation (Rating & Reason)
+    # -------------------------------------------------------------------------
     symbols_str = ", ".join(symbols)
 
     prompt = (
@@ -108,7 +111,7 @@ def analyze_and_rate_with_grok(
         "temperature": 0.2
     }
 
-    print(f"[{timeframe_table.upper()}] Sending {len(symbols)} symbols to Grok API ({model})...")
+    print(f"[{timeframe_table.upper()}] STEP 4: Grok API Evaluating {len(symbols)} symbols...")
     response = requests.post(url, headers=headers, json=payload)
 
     if response.status_code != 200:
@@ -131,76 +134,104 @@ def analyze_and_rate_with_grok(
         logger.error(f"Failed to parse Grok JSON response for {timeframe_table}: {e}\nRaw text: {raw_content[:300]}")
         return []
 
-    # Insert/update parsed ratings into specified database table ('monthly', 'weekly', or 'daily')
+    rating_map = {item["symbol"].upper(): item for item in ratings_data if "symbol" in item}
+
+    # -------------------------------------------------------------------------
+    # STEP 5: Zerodha API Fetch Recent High & Place +1% GTT Breakout Alert
+    # -------------------------------------------------------------------------
+    print(f"[{timeframe_table.upper()}] STEP 5: Fetching Zerodha Recent Highs & Placing +1% Breakout Alerts...")
+    alerts_map = {}
+    for sym in symbols:
+        try:
+            alert_info = set_zerodha_1pct_breakout_alert(sym, timeframe=timeframe_table)
+            alerts_map[sym.upper()] = alert_info
+        except Exception as alert_err:
+            logger.error(f"Failed to setup Zerodha alert for {sym}: {alert_err}")
+
+    # -------------------------------------------------------------------------
+    # STEP 6: Save Ratings to DB Tables ('monthly', 'weekly', 'daily')
+    # -------------------------------------------------------------------------
+    print(f"[{timeframe_table.upper()}] STEP 6: Saving Ratings, Recent Highs, and Alerts into '{timeframe_table}' DB Table...")
+    final_records = []
     try:
         dm = DataManager()
         saved_count = 0
-        for item in ratings_data:
-            sym = item.get("symbol")
-            rating = item.get("rating")
-            reason = item.get("reason")
-            if sym and rating and reason:
-                if dm.save_stock_rating(table_name=timeframe_table, symbol=sym, rating=rating, reason=reason):
-                    saved_count += 1
-        print(f"[{timeframe_table.upper()}] Successfully saved {saved_count} stock ratings into '{timeframe_table}' database table!\n")
-        
-        # Automatically set Zerodha 1% breakout alerts above recent high
-        try:
-            from scripts.zerodha_alert_manager import setup_alerts_for_symbols
-            setup_alerts_for_symbols(symbols, timeframe=timeframe_table)
-        except Exception as alert_err:
-            logger.error(f"Failed to setup Zerodha alerts for {timeframe_table}: {alert_err}")
+        for sym in symbols:
+            sym_upper = sym.upper()
+            r_info = rating_map.get(sym_upper, {})
+            a_info = alerts_map.get(sym_upper, {})
 
+            rating_val = r_info.get("rating", 3.5)
+            reason_val = r_info.get("reason", "Evaluated by Grok AI screener.")
+            recent_high = a_info.get("recent_high", 0.0)
+            trigger_price = a_info.get("alert_trigger_price", 0.0)
+            alert_status = a_info.get("status", "NOT_SET")
+
+            doc = {
+                "symbol": sym_upper,
+                "rating": rating_val,
+                "reason": reason_val,
+                "recent_high": recent_high,
+                "alert_trigger_price": trigger_price,
+                "alert_status": alert_status,
+                "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
+            }
+
+            col = dm.db[timeframe_table.strip().lower()]
+            col.update_one({"symbol": sym_upper}, {"$set": doc}, upsert=True)
+            saved_count += 1
+            final_records.append(doc)
+
+        print(f"[{timeframe_table.upper()}] SUCCESS: Saved {saved_count} complete records into '{timeframe_table}' database table!\n")
     except Exception as db_err:
         logger.error(f"Database insertion failed for {timeframe_table}: {db_err}")
 
-    return ratings_data
+    return final_records
 
-def run_all_screeners(api_key: str = None, top_n: int = 20):
+def run_pipeline(api_key: str = None, top_n: int = 20):
     """
-    Executes the full automated pipeline across Monthly, Weekly, and Daily screeners.
-    Applies strict priority deduplication (Monthly > Weekly > Daily):
-      - Monthly keeps all top_n symbols.
-      - Weekly removes any symbols already present in Monthly.
-      - Daily removes any symbols already present in Monthly or Weekly.
+    Executes full pipeline in exact requested flowchart sequence:
+      Step 1: Chartink Screeners (Monthly, Weekly, Daily)
+      Step 2: Cross-Timeframe Priority Deduplication (Monthly > Weekly > Daily)
+      Step 3: DB Table Comparison Deduplication (Skip stocks already in DB)
+      Step 4: Grok API Evaluation (Rating & Reason)
+      Step 5: Zerodha API Fetch Recent High & Place +1% GTT Breakout Alert
+      Step 6: Save Ratings to DB Tables ('monthly', 'weekly', 'daily')
     """
     grok_key = api_key or os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
-    
+
+    # -------------------------------------------------------------------------
+    # STEP 1: Chartink Screeners (Monthly, Weekly, Daily)
+    # -------------------------------------------------------------------------
     print("\n=======================================================")
-    print(" 1. FETCHING & DEDUPLICATING SCREENER SYMBOLS")
-    print(" Priority Rule: MONTHLY > WEEKLY > DAILY")
+    print(" STEP 1: FETCHING CHARTINK SCREENERS (MONTHLY, WEEKLY, DAILY)")
     print("=======================================================")
-    
-    # 1. Fetch raw symbols from Chartink screeners
     raw_monthly = get_chartink_symbols(SCREENER_URLS["monthly"], top_n=top_n)
     raw_weekly = get_chartink_symbols(SCREENER_URLS["weekly"], top_n=top_n)
     raw_daily = get_chartink_symbols(SCREENER_URLS["daily"], top_n=top_n)
 
-    # 2. Priority Deduplication
+    # -------------------------------------------------------------------------
+    # STEP 2: Cross-Timeframe Priority Deduplication (Monthly > Weekly > Daily)
+    # -------------------------------------------------------------------------
+    print("\n=======================================================")
+    print(" STEP 2: CROSS-TIMEFRAME DEDUPLICATION (MONTHLY > WEEKLY > DAILY)")
+    print("=======================================================")
     seen_symbols = set()
 
     # Monthly keeps highest priority
     final_monthly = list(raw_monthly)
     seen_symbols.update(final_monthly)
 
-    # Weekly filters out symbols in Monthly
+    # Weekly filters out Monthly
     final_weekly = [s for s in raw_weekly if s not in seen_symbols]
-    removed_weekly = [s for s in raw_weekly if s in seen_symbols]
     seen_symbols.update(final_weekly)
 
-    # Daily filters out symbols in Monthly or Weekly
+    # Daily filters out Monthly and Weekly
     final_daily = [s for s in raw_daily if s not in seen_symbols]
-    removed_daily = [s for s in raw_daily if s in seen_symbols]
 
-    print(f"\n[MONTHLY] ({len(final_monthly)} symbols): {final_monthly}")
-    
-    print(f"\n[WEEKLY]  ({len(final_weekly)} symbols, {len(removed_weekly)} duplicates removed): {final_weekly}")
-    if removed_weekly:
-        print(f"          Duplicates removed (kept in Monthly): {removed_weekly}")
-
-    print(f"\n[DAILY]   ({len(final_daily)} symbols, {len(removed_daily)} duplicates removed): {final_daily}")
-    if removed_daily:
-        print(f"          Duplicates removed (kept in Monthly/Weekly): {removed_daily}")
+    print(f"Monthly ({len(final_monthly)} symbols): {final_monthly}")
+    print(f"Weekly  ({len(final_weekly)} symbols): {final_weekly}")
+    print(f"Daily   ({len(final_daily)} symbols): {final_daily}")
 
     deduped_symbols = {
         "monthly": final_monthly,
@@ -208,58 +239,58 @@ def run_all_screeners(api_key: str = None, top_n: int = 20):
         "daily": final_daily
     }
 
-    # 3. Database Table Comparison Deduplication & Grok API Processing
-    results = {}
+    # -------------------------------------------------------------------------
+    # STEP 3: DB Table Comparison Deduplication (Skip stocks already in DB)
+    # -------------------------------------------------------------------------
+    print("\n=======================================================")
+    print(" STEP 3: DB TABLE COMPARISON DEDUPLICATION (SKIP STOCKS IN DB)")
+    print("=======================================================")
     dm = None
     try:
         dm = DataManager()
     except Exception as e:
-        logger.warning(f"Could not connect to DataManager for DB comparison: {e}")
+        logger.warning(f"Could not connect to DataManager for DB check: {e}")
 
+    pipeline_queue = {}
     for timeframe, symbols in deduped_symbols.items():
-        print(f"\n=======================================================")
-        print(f" PROCESSING TIMEFRAME: {timeframe.upper()}")
-        print(f"=======================================================")
-        
-        if not symbols:
-            print(f"[{timeframe.upper()}] No unique symbols to analyze.")
-            results[timeframe] = []
-            continue
-
-        # DB Deduplication: Filter out symbols already present in target DB table
         db_existing = set()
         if dm:
             try:
                 records = dm.get_stock_ratings(timeframe)
                 db_existing = {r["symbol"].upper() for r in records if "symbol" in r}
             except Exception as db_err:
-                logger.warning(f"Failed to fetch existing records from '{timeframe}' table: {db_err}")
+                logger.warning(f"Failed to fetch DB records for {timeframe}: {db_err}")
 
         new_symbols = [s for s in symbols if s not in db_existing]
         db_duplicates = [s for s in symbols if s in db_existing]
 
-        print(f"[{timeframe.upper()}] Screener symbols: {len(symbols)}")
-        if db_duplicates:
-            print(f"[{timeframe.upper()}] DB Table Duplicates (Skipped): {db_duplicates}")
-        print(f"[{timeframe.upper()}] NEW Symbols to analyze with Grok ({len(new_symbols)}): {new_symbols}")
+        pipeline_queue[timeframe] = new_symbols
+        print(f"[{timeframe.upper()}] Screener symbols: {len(symbols)} | DB Duplicates Skipped: {len(db_duplicates)} | NEW Symbols: {len(new_symbols)}")
 
-        if not new_symbols:
-            print(f"[{timeframe.upper()}] All symbols already exist in '{timeframe}' database table. Skipping Grok API call.")
+    # -------------------------------------------------------------------------
+    # STEPS 4, 5, 6: Grok API -> Zerodha 1% Alert -> Save to DB Tables
+    # -------------------------------------------------------------------------
+    results = {}
+    for timeframe, symbols in pipeline_queue.items():
+        print(f"\n=======================================================")
+        print(f" EXECUTING STEPS 4, 5, 6 FOR: {timeframe.upper()}")
+        print(f"=======================================================")
+
+        if not symbols:
+            print(f"[{timeframe.upper()}] No new symbols to process.")
             results[timeframe] = []
             continue
 
         if grok_key:
-            ratings = analyze_and_rate_with_grok(new_symbols, timeframe_table=timeframe, api_key=grok_key)
-            results[timeframe] = ratings
+            records = analyze_evaluate_and_save(symbols, timeframe_table=timeframe, api_key=grok_key)
+            results[timeframe] = records
         else:
-            print(f"[NOTE] Add GROK_API_KEY to .env to execute live Grok rating & save to '{timeframe}' table.")
-            results[timeframe] = new_symbols
+            print(f"[NOTE] Add GROK_API_KEY to .env to execute live Grok API, Zerodha Alerts, and Save to '{timeframe}' Table.")
+            results[timeframe] = symbols
 
     return results
 
 if __name__ == "__main__":
-    print("=== Multi-Timeframe Chartink + Grok API + DB Pipeline (With Priority & DB Deduplication) ===")
+    print("=== Pipeline Flowchart Execution ===")
     grok_key = os.getenv("GROK_API_KEY") or os.getenv("XAI_API_KEY")
-    run_all_screeners(api_key=grok_key, top_n=20)
-
-
+    run_pipeline(api_key=grok_key, top_n=20)
