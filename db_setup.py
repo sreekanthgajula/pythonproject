@@ -116,6 +116,10 @@ def apply_validation_schemas(db) -> None:
                 "reason": {
                     "bsonType": "string",
                     "description": "must be a string explaining the analysis reason and is required"
+                },
+                "alert_count": {
+                    "bsonType": ["int", "long", "double"],
+                    "description": "count of how many times the stock has triggered an alert"
                 }
             }
         }

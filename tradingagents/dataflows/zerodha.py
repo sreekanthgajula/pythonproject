@@ -241,49 +241,70 @@ def get_request_token_via_totp(user_id: str, password: str, api_key: str, twofa_
         
     # 4. Get the request token from connect URL
     connect_url = f"https://kite.zerodha.com/connect/login?api_key={api_key}&v=3"
-    url = connect_url
     request_token = None
     
-    for _ in range(10):
+    try:
+        r = session.get(connect_url, headers=headers, allow_redirects=True, timeout=15)
         try:
-            r = session.get(url, headers=headers, allow_redirects=False)
-        except Exception as e:
-            # If the next redirect destination fails to connect (e.g. localhost callback),
-            # check if the target URL itself contains the request_token before raising the error
-            parsed = urlparse(url)
+            res_json = r.json()
+            if isinstance(res_json, dict) and res_json.get("status") == "error":
+                raise ValueError(f"Zerodha API Error: {res_json.get('message', 'Invalid response')}")
+        except ValueError as v_err:
+            if "Zerodha API Error" in str(v_err):
+                raise v_err
+        except Exception:
+            pass
+
+        # Search for request_token across final URL and all redirect history URLs & Location headers
+        candidate_urls = [r.url]
+        for h in r.history:
+            candidate_urls.append(h.url)
+            loc = h.headers.get("Location")
+            if loc:
+                candidate_urls.append(loc)
+                
+        for u in candidate_urls:
+            parsed = urlparse(u)
             params = parse_qs(parsed.query)
             if "request_token" in params:
                 request_token = params["request_token"][0]
                 break
-            raise e
-            
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-        if "request_token" in params:
-            request_token = params["request_token"][0]
-            break
-            
-        if r.status_code in [301, 302]:
-            next_url = r.headers.get("Location")
-            if not next_url:
-                break
-            if next_url.startswith("/"):
-                next_url = "https://kite.zerodha.com" + next_url
-                
-            # Check if the next redirect location contains the request_token
-            parsed = urlparse(next_url)
-            params = parse_qs(parsed.query)
-            if "request_token" in params:
-                request_token = params["request_token"][0]
-                break
-                
-            url = next_url
+    except Exception as e:
+        err_str = str(e)
+        import re
+        m = re.search(r"request_token=([a-zA-Z0-9]+)", err_str)
+        if m:
+            request_token = m.group(1)
         else:
-            parsed = urlparse(r.url)
-            params = parse_qs(parsed.query)
-            if "request_token" in params:
-                request_token = params["request_token"][0]
-            break
+            # Fallback manual loop with allow_redirects=False
+            url = connect_url
+            for _ in range(10):
+                try:
+                    r_sub = session.get(url, headers=headers, allow_redirects=False, timeout=10)
+                except Exception as sub_err:
+                    m2 = re.search(r"request_token=([a-zA-Z0-9]+)", str(sub_err))
+                    if m2:
+                        request_token = m2.group(1)
+                    break
+                parsed = urlparse(r_sub.url)
+                params = parse_qs(parsed.query)
+                if "request_token" in params:
+                    request_token = params["request_token"][0]
+                    break
+                if r_sub.status_code in [301, 302]:
+                    next_url = r_sub.headers.get("Location")
+                    if not next_url:
+                        break
+                    if next_url.startswith("/"):
+                        next_url = "https://kite.zerodha.com" + next_url
+                    parsed_next = urlparse(next_url)
+                    params_next = parse_qs(parsed_next.query)
+                    if "request_token" in params_next:
+                        request_token = params_next["request_token"][0]
+                        break
+                    url = next_url
+                else:
+                    break
             
     if not request_token:
         raise ValueError("request_token not found in redirect chain.")

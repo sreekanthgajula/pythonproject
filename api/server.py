@@ -351,10 +351,58 @@ def startup_event():
     # Start the daily Zerodha connection check loop in a daemon thread
     threading.Thread(target=check_zerodha_daily_loop, daemon=True).start()
     threading.Thread(target=monitor_watchlist, daemon=True).start()
+    # Start Zerodha KiteTicker WebSocket alert engine
+    try:
+        from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+        ws_alert_engine.start(threaded=True)
+        print("[ZERODHA-WS] Zerodha KiteTicker WebSocket alert engine initialized.")
+    except Exception as ws_err:
+        print(f"[ZERODHA-WS] Could not auto-start KiteTicker WebSocket engine: {ws_err}")
+
+@app.get("/api/zerodha/websocket/status")
+def get_websocket_status():
+    """Returns the live status of the Zerodha KiteTicker WebSocket streaming alert engine."""
+    try:
+        from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+        return {
+            "status": "success",
+            "running": ws_alert_engine.is_running,
+            "mock_mode": ws_alert_engine.mock_mode,
+            "monitored_tokens_count": len(ws_alert_engine.token_map),
+            "monitored_stocks": list({v["symbol"] for v in ws_alert_engine.token_map.values()})
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/zerodha/websocket/start")
+def start_websocket_service():
+    """Starts/restarts the Zerodha KiteTicker WebSocket streaming alert service."""
+    try:
+        from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+        ws_alert_engine.start(threaded=True)
+        return {
+            "status": "success",
+            "message": "Zerodha KiteTicker WebSocket service started.",
+            "running": ws_alert_engine.is_running,
+            "monitored_tokens_count": len(ws_alert_engine.token_map)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/zerodha/websocket/stop")
+def stop_websocket_service():
+    """Stops the Zerodha KiteTicker WebSocket streaming alert service."""
+    try:
+        from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+        ws_alert_engine.stop()
+        return {"status": "success", "message": "Zerodha KiteTicker WebSocket service stopped."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/watchlist")
 def get_watchlist():
     return list(watchlist)
+
 
 @app.post("/api/watchlist/add")
 def add_to_watchlist(req: WatchlistRequest):
@@ -382,6 +430,80 @@ def clear_alerts():
 
 class TotpRequest(BaseModel):
     totp: str
+
+@app.get("/api/zerodha/gtts")
+def get_zerodha_gtt_alerts():
+    """Fetches all active GTT breakout alerts live from Zerodha Kite Connect account."""
+    try:
+        import os
+        from kiteconnect import KiteConnect
+        from tradingagents.dataflows.zerodha import get_zerodha_credentials
+        
+        creds = get_zerodha_credentials()
+        api_key = creds.get("api_key")
+        access_token = os.environ.get("ZERODHA_ACCESS_TOKEN") or creds.get("access_token")
+        
+        if not api_key or not access_token:
+            return {"status": "error", "message": "Zerodha credentials or access token missing", "gtts": [], "count": 0}
+            
+        kite = KiteConnect(api_key=api_key)
+        kite.set_access_token(access_token)
+        
+        raw_gtts = kite.get_gtts()
+        gtt_list = []
+        for g in raw_gtts:
+            cond = g.get("condition", {})
+            orders = g.get("orders", [{}])
+            first_order = orders[0] if orders else {}
+            
+            gtt_list.append({
+                "id": g.get("id"),
+                "symbol": cond.get("tradingsymbol", "N/A"),
+                "status": g.get("status", "ACTIVE").upper(),
+                "trigger_price": cond.get("trigger_values", [0.0])[0] if cond.get("trigger_values") else 0.0,
+                "last_price": cond.get("last_price", 0.0),
+                "created_at": g.get("created_at"),
+                "expires_at": g.get("expires_at"),
+                "order_type": first_order.get("order_type", "LIMIT"),
+                "transaction_type": first_order.get("transaction_type", "BUY"),
+                "quantity": first_order.get("quantity", 1),
+                "price": first_order.get("price", 0.0)
+            })
+            
+        return {"status": "success", "gtts": gtt_list, "count": len(gtt_list)}
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch Zerodha GTTs: {e}")
+        return {"status": "error", "message": str(e), "gtts": [], "count": 0}
+
+@app.delete("/api/zerodha/gtts/{trigger_id}")
+def cancel_zerodha_gtt_alert(trigger_id: int):
+    """Cancels a Zerodha GTT alert order directly on Zerodha API and unsets gtt_id in DB collections."""
+    try:
+        from scripts.zerodha_alert_manager import get_kite_client
+        kite = get_kite_client()
+        if not kite:
+            raise HTTPException(status_code=400, detail="Zerodha client unavailable or credentials missing")
+        
+        kite.delete_gtt(trigger_id)
+        
+        # Clean up matching gtt_id in local DB collections
+        from data_manager import DataManager
+        dm = DataManager()
+        for col_name in ["monthly", "weekly", "daily"]:
+            dm.db[col_name].update_many(
+                {"gtt_id": trigger_id},
+                {"$unset": {"gtt_id": ""}, "$set": {"alert_status": "CANCELLED_ON_ZERODHA"}}
+            )
+            
+        return {
+            "status": "success",
+            "message": f"Successfully cancelled Zerodha GTT alert #{trigger_id} on Zerodha API",
+            "trigger_id": trigger_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cancel Zerodha GTT #{trigger_id}: {e}")
 
 @app.get("/api/zerodha/status")
 def get_zerodha_status():
@@ -708,6 +830,142 @@ def get_chart_data(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+class PipelineRunRequest(BaseModel):
+    top_n: Optional[int] = 20
+    api_key: Optional[str] = None
+    force: Optional[bool] = False
+
+@app.get("/api/ratings/{timeframe}")
+def get_stock_ratings(timeframe: str):
+    """Retrieve Grok-evaluated high-conviction stocks and 1% trigger prices for a timeframe ('monthly', 'weekly', 'daily')."""
+    tf_clean = timeframe.strip().lower()
+    if tf_clean not in ("monthly", "weekly", "daily"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+        
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        records = dm.get_stock_ratings(tf_clean)
+        # Format datetimes to ISO strings for JSON serialization
+        for r in records:
+            if "_id" in r:
+                r["_id"] = str(r["_id"])
+            if "alert_count" not in r:
+                r["alert_count"] = 0
+            if "updated_at" in r and hasattr(r["updated_at"], "isoformat"):
+                r["updated_at"] = r["updated_at"].isoformat()
+        return {"status": "success", "timeframe": tf_clean, "count": len(records), "data": records}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch {tf_clean} ratings: {e}")
+
+@app.delete("/api/ratings/{timeframe}")
+def clear_all_timeframe_ratings(timeframe: str):
+    """Deletes all stock records from a specific timeframe table ('monthly', 'weekly', 'daily')."""
+    tf_clean = timeframe.strip().lower()
+    if tf_clean not in ("monthly", "weekly", "daily"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+        
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        deleted_count = dm.clear_all_stock_ratings(tf_clean)
+        
+        # Reload WebSocket targets
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_alert_engine.load_monitored_targets()
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "message": f"Successfully deleted all stock records from '{tf_clean}' table.",
+            "timeframe": tf_clean,
+            "deleted_count": deleted_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear {tf_clean} table: {e}")
+
+@app.delete("/api/ratings/{timeframe}/{symbol}")
+def delete_single_stock_rating(timeframe: str, symbol: str):
+    """Deletes an individual stock record from a specific timeframe table ('monthly', 'weekly', 'daily')."""
+    tf_clean = timeframe.strip().lower()
+    if tf_clean not in ("monthly", "weekly", "daily"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+        
+    sym_clean = symbol.strip().upper()
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        success = dm.delete_stock_rating(tf_clean, sym_clean)
+        
+        # Reload WebSocket targets
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_alert_engine.load_monitored_targets()
+        except Exception:
+            pass
+
+        return {
+            "status": "success" if success else "not_found",
+            "message": f"Deleted symbol '{sym_clean}' from '{tf_clean}' table." if success else f"Symbol '{sym_clean}' not found in '{tf_clean}'.",
+            "timeframe": tf_clean,
+            "symbol": sym_clean
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete {sym_clean} from {tf_clean} table: {e}")
+
+class BatchDeleteRequest(BaseModel):
+    symbols: List[str]
+
+@app.post("/api/ratings/{timeframe}/delete-batch")
+def delete_batch_stock_ratings(timeframe: str, req: BatchDeleteRequest):
+    """Deletes a selected list of stock records from a specific timeframe table and cancels their Zerodha GTT alerts."""
+    tf_clean = timeframe.strip().lower()
+    if tf_clean not in ("monthly", "weekly", "daily"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+        
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        deleted_count = dm.delete_batch_stock_ratings(tf_clean, req.symbols)
+        
+        # Reload WebSocket targets
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_alert_engine.load_monitored_targets()
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "message": f"Successfully deleted {deleted_count} selected stock records from '{tf_clean}' table.",
+            "timeframe": tf_clean,
+            "deleted_count": deleted_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to batch delete from {tf_clean} table: {e}")
+
+@app.post("/api/pipeline/run")
+def trigger_chartink_grok_pipeline(req: PipelineRunRequest, background_tasks: BackgroundTasks):
+    """Trigger full Chartink -> Grok AI -> DB -> +1% Alert pipeline as a background task (guarded to run Grok API once per day)."""
+    try:
+        from scripts.grok_chartink_analyzer import run_pipeline
+        top_n_val = req.top_n or 20
+        key_val = req.api_key
+        force_val = bool(req.force)
+        
+        background_tasks.add_task(run_pipeline, api_key=key_val, top_n=top_n_val, force_run=force_val)
+        return {
+            "status": "success",
+            "message": f"Chartink -> Grok AI -> DB -> +1% Alert pipeline triggered (Force={force_val}). Grok API runs max once/day.",
+            "top_n": top_n_val,
+            "force_run": force_val
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to launch pipeline: {e}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)
+

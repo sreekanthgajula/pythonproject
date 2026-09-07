@@ -241,3 +241,111 @@ class DataManager:
         records = list(col.find(query, {"_id": 0}))
         return records
 
+    def delete_stock_rating(self, table_name: str, symbol: str) -> bool:
+        """Deletes a single stock document from the specified timeframe table and cancels any associated Zerodha GTT alert."""
+        valid_tables = {"monthly", "weekly", "daily"}
+        clean_table = table_name.strip().lower()
+        if clean_table not in valid_tables:
+            raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
+
+        clean_symbol = symbol.strip().upper()
+        col = self.db[clean_table]
+        try:
+            # Check for existing document to see if Zerodha GTT ID is attached
+            doc = col.find_one({"$or": [{"symbol": clean_symbol}, {"symbol": f"{clean_symbol}.NS"}]})
+            if doc and doc.get("gtt_id"):
+                gtt_id = doc.get("gtt_id")
+                try:
+                    from scripts.zerodha_alert_manager import get_kite_client
+                    kite = get_kite_client()
+                    if kite:
+                        kite.delete_gtt(int(gtt_id))
+                        logger.info(f"[ZERODHA GTT CANCEL] Successfully cancelled Zerodha GTT #{gtt_id} for {clean_symbol}")
+                except Exception as gtt_err:
+                    logger.warning(f"Could not cancel Zerodha GTT #{gtt_id} for {clean_symbol}: {gtt_err}")
+
+            res = col.delete_one({"$or": [{"symbol": clean_symbol}, {"symbol": f"{clean_symbol}.NS"}]})
+            logger.info(f"Deleted symbol '{clean_symbol}' from '{clean_table}': Count={res.deleted_count}")
+            return res.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Failed to delete symbol '{clean_symbol}' from '{clean_table}': {e}")
+            return False
+
+    def clear_all_stock_ratings(self, table_name: str) -> int:
+        """Deletes all stock documents from the specified timeframe table and cancels their active Zerodha GTT alerts."""
+        valid_tables = {"monthly", "weekly", "daily"}
+        clean_table = table_name.strip().lower()
+        if clean_table not in valid_tables:
+            raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
+
+        col = self.db[clean_table]
+        try:
+            # Cancel active Zerodha GTTs for all documents in this collection
+            docs = list(col.find({"gtt_id": {"$exists": True, "$ne": None}}))
+            if docs:
+                try:
+                    from scripts.zerodha_alert_manager import get_kite_client
+                    kite = get_kite_client()
+                    if kite:
+                        for d in docs:
+                            gtt_id = d.get("gtt_id")
+                            sym = d.get("symbol", "UNKNOWN")
+                            if gtt_id:
+                                try:
+                                    kite.delete_gtt(int(gtt_id))
+                                    logger.info(f"[ZERODHA GTT CANCEL] Cancelled Zerodha GTT #{gtt_id} for {sym}")
+                                except Exception as ge:
+                                    logger.warning(f"Could not cancel Zerodha GTT #{gtt_id} for {sym}: {ge}")
+                except Exception as kite_err:
+                    logger.warning(f"Failed to initialize Zerodha client for bulk GTT cancellation: {kite_err}")
+
+            res = col.delete_many({})
+            logger.info(f"Cleared all records from '{clean_table}': Count={res.deleted_count}")
+            return res.deleted_count
+        except Exception as e:
+            logger.error(f"Failed to clear records from '{clean_table}': {e}")
+            return 0
+
+    def delete_batch_stock_ratings(self, table_name: str, symbols: list) -> int:
+        """Deletes a list of stock symbols from the specified timeframe table and cancels any active Zerodha GTT alerts for them."""
+        valid_tables = {"monthly", "weekly", "daily"}
+        clean_table = table_name.strip().lower()
+        if clean_table not in valid_tables:
+            raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
+
+        if not symbols:
+            return 0
+
+        clean_symbols = [s.strip().upper() for s in symbols if s]
+        col = self.db[clean_table]
+        deleted_total = 0
+
+        try:
+            from scripts.zerodha_alert_manager import get_kite_client
+            kite = get_kite_client()
+        except Exception:
+            kite = None
+
+        for sym in clean_symbols:
+            try:
+                # Check for existing document to see if Zerodha GTT ID is attached
+                doc = col.find_one({"$or": [{"symbol": sym}, {"symbol": f"{sym}.NS"}]})
+                if doc and doc.get("gtt_id"):
+                    gtt_id = doc.get("gtt_id")
+                    if kite and gtt_id:
+                        try:
+                            kite.delete_gtt(int(gtt_id))
+                            logger.info(f"[ZERODHA GTT CANCEL] Cancelled Zerodha GTT #{gtt_id} for batch symbol {sym}")
+                        except Exception as gtt_err:
+                            logger.warning(f"Could not cancel Zerodha GTT #{gtt_id} for {sym}: {gtt_err}")
+
+                res = col.delete_one({"$or": [{"symbol": sym}, {"symbol": f"{sym}.NS"}]})
+                deleted_total += res.deleted_count
+            except Exception as e:
+                logger.error(f"Failed to delete symbol '{sym}' from '{clean_table}': {e}")
+
+        logger.info(f"Batch deleted {deleted_total} symbols from '{clean_table}'")
+        return deleted_total
+
+
+

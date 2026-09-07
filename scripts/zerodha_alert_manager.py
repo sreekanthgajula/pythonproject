@@ -111,23 +111,28 @@ def fetch_recent_high(symbol: str, timeframe: str = "monthly", lookback_periods:
     alert_trigger_price = round(recent_high * 1.01, 2)
     return round(recent_high, 2), alert_trigger_price
 
-def set_zerodha_1pct_breakout_alert(symbol: str, timeframe: str = "monthly") -> dict:
+def set_zerodha_1pct_breakout_alert(symbol: str, timeframe: str = "monthly", override_recent_high: float = None) -> dict:
     """
     Programmatically sets an alert 1% above the recent high for a stock symbol
     and records it in Zerodha (via GTT / Alert API) and the local database.
     """
     clean_sym = symbol.strip().upper()
-    recent_high, trigger_price = fetch_recent_high(clean_sym, timeframe=timeframe)
+    if override_recent_high and override_recent_high > 0:
+        recent_high = round(override_recent_high, 2)
+        trigger_price = round(recent_high * 1.01, 2)
+    else:
+        recent_high, trigger_price = fetch_recent_high(clean_sym, timeframe=timeframe)
 
     kite = get_kite_client()
     gtt_status = "REGISTERED_LOCAL"
+    gtt_quantity = int(os.getenv("ZERODHA_GTT_QUANTITY", "5000"))
+    gtt_id = None
 
-    # Attempt Zerodha GTT (Good-Till-Triggered) order/alert placement
+    # Attempt Zerodha GTT (Good-Till-Triggered) order/alert placement with 5,000 quantity
     if kite:
         try:
             trading_symbol = clean_sym.replace(".NS", "")
-            # Place GTT single trigger alert 1% above recent high
-            # Note: GTT trigger values expect trigger price
+            # Place GTT single trigger alert 1% above recent high with 5,000 quantity
             gtt_resp = kite.place_gtt(
                 trigger_type=kite.GTT_TYPE_SINGLE,
                 tradingsymbol=trading_symbol,
@@ -136,36 +141,39 @@ def set_zerodha_1pct_breakout_alert(symbol: str, timeframe: str = "monthly") -> 
                 last_price=recent_high,
                 orders=[{
                     "transaction_type": kite.TRANSACTION_TYPE_BUY,
-                    "quantity": 1,
+                    "quantity": gtt_quantity,
                     "order_type": kite.ORDER_TYPE_LIMIT,
                     "product": kite.PRODUCT_CNC,
                     "price": trigger_price
                 }]
             )
             gtt_id = gtt_resp.get("trigger_id")
-            gtt_status = f"ZERODHA_GTT_ACTIVE (ID: {gtt_id})"
-            logger.info(f"[ZERODHA GTT] Set 1% breakout alert for {trading_symbol} at ₹{trigger_price} (GTT ID: {gtt_id})")
+            gtt_status = f"ZERODHA_GTT_ACTIVE (ID: {gtt_id}, Qty: {gtt_quantity})"
+            logger.info(f"[ZERODHA GTT] Set 1% breakout alert for {trading_symbol} at ₹{trigger_price} with QTY={gtt_quantity} (GTT ID: {gtt_id})")
         except Exception as e:
             logger.warning(f"Zerodha GTT placement for {clean_sym} notice: {e}")
             gtt_status = f"LOCAL_ALERT_SET ({e})"
 
-    # Update database record with recent_high and alert_trigger_price
+    # Update database record with recent_high, alert_trigger_price, and gtt_quantity
     try:
         dm = DataManager()
         col = dm.db[timeframe.strip().lower()]
+        set_dict = {
+            "recent_high": recent_high,
+            "alert_trigger_price": trigger_price,
+            "alert_status": gtt_status,
+            "gtt_quantity": gtt_quantity,
+            "alert_updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
+        }
+        if gtt_id:
+            set_dict["gtt_id"] = gtt_id
+
         col.update_one(
             {"symbol": clean_sym},
-            {
-                "$set": {
-                    "recent_high": recent_high,
-                    "alert_trigger_price": trigger_price,
-                    "alert_status": gtt_status,
-                    "alert_updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
-                }
-            },
+            {"$set": set_dict},
             upsert=True
         )
-        logger.info(f"Updated '{timeframe}' table for {clean_sym}: High=₹{recent_high}, Trigger=₹{trigger_price} (+1%)")
+        logger.info(f"Updated '{timeframe}' table for {clean_sym}: High=₹{recent_high}, Trigger=₹{trigger_price} (+1%), Qty={gtt_quantity}")
     except Exception as db_err:
         logger.error(f"Failed to update alert data in DB for {clean_sym}: {db_err}")
 
@@ -174,6 +182,8 @@ def set_zerodha_1pct_breakout_alert(symbol: str, timeframe: str = "monthly") -> 
         "timeframe": timeframe,
         "recent_high": recent_high,
         "alert_trigger_price": trigger_price,
+        "gtt_quantity": gtt_quantity,
+        "gtt_id": gtt_id,
         "status": gtt_status
     }
 
