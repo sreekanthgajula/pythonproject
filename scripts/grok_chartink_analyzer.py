@@ -18,7 +18,7 @@ import json
 import logging
 import re
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -156,16 +156,16 @@ def analyze_evaluate_and_save(
         prompt = (
             f"Here is a curated list of top candidate stocks from the Chartink {timeframe_table.upper()} breakout screener:\n\n"
             f"{context_str}\n\n"
-            f"Analyze these stocks with technical breakout context, volume spikes, and general market potential for the {timeframe_table.upper()} timeframe.\n"
-            f"Judge which stocks have strong high-probability setups and separate them from weak/false breakout candidates.\n\n"
+            f"Analyze these stocks for the {timeframe_table.upper()} timeframe focusing strictly on pure forward-looking potential, recent earnings trajectory, order book expansion, and growth catalysts.\n"
+            f"Judge which stocks have strong high-probability setups backed by fundamental drivers, and separate them from weak/false breakouts. Exclude any stocks lacking solid earnings growth, order pipeline, or clear future catalysts.\n"
             f"Return your output strictly as a JSON array of objects. Do NOT include markdown formatting or extra text.\n"
             f"Each object MUST contain these exact keys:\n"
             f"  - \"symbol\": stock ticker (e.g. \"SIGACHI\")\n"
             f"  - \"rating\": numeric rating from 1.0 to 5.0 (where 5.0 is highest potential, >= 4.0 indicated for strong setup)\n"
-            f"  - \"reason\": concise explanation evaluating technical pattern, volume surge, and upside potential\n\n"
+            f"  - \"reason\": concise explanation evaluating recent earnings growth, order book/expansion drivers, and forward-looking upside potential\n"
             f"Example JSON output format:\n"
             f"[\n"
-            f"  {{\"symbol\": \"SIGACHI\", \"rating\": 4.7, \"reason\": \"Strong volume spike with clean multi-bar TSI momentum breakout.\"}}\n"
+            f"  {{\"symbol\": \"SIGACHI\", \"rating\": 4.7, \"reason\": \"Strong Q3 net profit (+35% YoY), new export order wins, and aggressive capacity expansion driving forward revenue visibility.\"}}\n"
             f"]"
         )
 
@@ -180,7 +180,7 @@ def analyze_evaluate_and_save(
             "messages": [
                 {
                     "role": "system",
-                    "content": f"You are Grok, an expert quantitative trading AI evaluating stock breakout setups for the {timeframe_table.upper()} timeframe. Output raw structured JSON."
+                    "content": f"You are Grok, an expert quantitative equity researcher evaluating stock setups based on forward-looking growth, earnings trajectory, and order book catalysts for the {timeframe_table.upper()} timeframe. Output raw structured JSON."
                 },
                 {
                     "role": "user",
@@ -242,6 +242,14 @@ def analyze_evaluate_and_save(
             alerts_map[sym] = alert_info
         except Exception as alert_err:
             logger.error(f"Failed to setup Zerodha alert for {sym}: {alert_err}")
+
+    # STEP 5.5: Post-setup verification loop - check if all alerts were set active on Zerodha;
+    # if any alert is missing/failed and stock price >= ₹5000 RS (e.g. PTCIL), change quantity to 500 and retry
+    try:
+        from scripts.zerodha_alert_manager import verify_and_retry_gtt_alerts
+        alerts_map = verify_and_retry_gtt_alerts(alerts_map, timeframe=timeframe_table)
+    except Exception as verify_err:
+        logger.error(f"Verification loop notice: {verify_err}")
 
     # -------------------------------------------------------------------------
     # STEP 6: Save Ratings, Recent Highs, Trigger Prices & Alerts to DB Tables
@@ -380,6 +388,18 @@ def run_pipeline(api_key: str = None, top_n: int = 20, force_run: bool = False):
             force_run=force_run
         )
         results[timeframe] = records
+
+    # STEP 7: Automatic Zerodha GTT Next Alert Integrity Audit & Recovery
+    print(f"\n=======================================================")
+    print(f" STEP 7: AUTOMATIC ZERODHA GTT NEXT ALERT INTEGRITY AUDIT & RECOVERY")
+    print(f"=======================================================")
+    try:
+        from scripts.gtt_next_alert_integrity_monitor import audit_and_restore_next_gtt_alerts
+        audit_res = audit_and_restore_next_gtt_alerts(dry_run=False)
+        print(f"[PIPELINE-AUDIT] Post-pipeline GTT next alert audit completed successfully.")
+        print(f"[PIPELINE-AUDIT] Active next alerts: {audit_res.get('active_next_alerts_count', 0)}, Restored missing alerts: {audit_res.get('restored_count', 0)}")
+    except Exception as audit_err:
+        logger.error(f"[PIPELINE-AUDIT] Error running post-pipeline GTT next alert audit: {audit_err}")
 
     return results
 

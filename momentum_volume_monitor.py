@@ -288,10 +288,12 @@ def send_alert(
     tsi_condition: bool,
     tsi_crossed: bool,
     webhook_url: str = None,
-    image_path: str = None
+    image_path: str = None,
+    buyer_score: int = None
 ) -> bool:
     """
     Sends a formatted alert message (with optional breakout chart image) to Discord Webhook and/or Telegram.
+    Enforces Telegram conviction filter rule: Telegram alerts are sent ONLY IF BUY CONVICTION RATING is 8/10, 9/10, 10/10 or 1/10, 2/10, 3/10.
     """
     discord_sent = False
     telegram_sent = False

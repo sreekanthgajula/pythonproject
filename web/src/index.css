@@ -134,8 +134,141 @@ body {
   right: -2px;
   bottom: -2px;
   border-radius: 50%;
-  border: 2px solid var(--success-emerald);
-  animation: pulse-ring 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  border: 1px solid var(--success-emerald);
+  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+/* Zerodha API Connection Panel */
+.zerodha-connect-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1.1rem 1.5rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.zerodha-connect-card:hover {
+  border-color: var(--border-glow);
+  box-shadow: var(--shadow-glow);
+}
+
+.zerodha-status-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.zerodha-status-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.zerodha-status-title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--text-main);
+}
+
+.zerodha-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 20px;
+  font-size: 0.825rem;
+  font-weight: 500;
+}
+
+.zerodha-status-badge.active {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.zerodha-status-badge.disconnected {
+  background: rgba(244, 63, 94, 0.15);
+  color: var(--danger-rose);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.pulse-dot.offline {
+  background-color: var(--danger-rose);
+  box-shadow: 0 0 8px var(--danger-rose);
+}
+
+.zerodha-connect-form {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.totp-input-wrapper {
+  position: relative;
+}
+
+.totp-input {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  letter-spacing: 0.15em;
+  padding: 0.6rem 1rem;
+  border-radius: 10px;
+  width: 210px;
+  text-align: center;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.totp-input:focus {
+  border-color: var(--primary-cyan);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+
+.btn-zerodha-connect {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #ffffff;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.65rem 1.25rem;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  transition: all 0.2s ease;
+}
+
+.btn-zerodha-connect:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4);
+}
+
+.btn-zerodha-connect.connected {
+  background: linear-gradient(135deg, var(--primary-indigo), var(--primary-cyan));
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
+
+.zerodha-msg-feedback {
+  width: 100%;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-top: 0.25rem;
+  color: var(--primary-cyan);
 }
 
 @keyframes pulse-ring {
@@ -172,6 +305,33 @@ body {
 }
 
 .btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-force-run {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, #f59e0b, #f43f5e);
+  color: #ffffff;
+  border: none;
+  padding: 0.65rem 1.25rem;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 14px rgba(244, 63, 94, 0.35);
+}
+
+.btn-force-run:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(244, 63, 94, 0.55);
+}
+
+.btn-force-run:disabled {
   opacity: 0.6;
   cursor: not-allowed;
   transform: none;
@@ -586,6 +746,18 @@ body {
   border: 1px solid rgba(99, 102, 241, 0.3);
 }
 
+.status-pill.gtt-triggered {
+  background: rgba(244, 63, 94, 0.15);
+  color: #f43f5e;
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.status-pill.gtt-disabled {
+  background: rgba(156, 163, 175, 0.15);
+  color: #9ca3af;
+  border: 1px solid rgba(156, 163, 175, 0.3);
+}
+
 .status-pill.local-set {
   background: rgba(56, 189, 248, 0.15);
   color: var(--primary-cyan);
@@ -596,6 +768,435 @@ body {
 .empty-state {
   padding: 4rem 2rem;
   text-align: center;
+  color: var(--text-dim);
+}
+
+/* ==========================================================================
+   🏎️ DAILY STOCK ALERT RACE STYLES
+   ========================================================================== */
+.race-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.race-header-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.race-header-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.race-title-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.race-icon-box {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.race-title-group h2 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin-bottom: 0.2rem;
+}
+
+.race-title-group p {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.race-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.daily-reset-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  padding: 0.4rem 0.85rem;
+  border-radius: 9999px;
+}
+
+.race-search-bar {
+  position: relative;
+  width: 100%;
+}
+
+/* Podium Grid (Top 3) */
+.podium-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr 1fr;
+  gap: 1.25rem;
+  align-items: end;
+}
+
+@media (max-width: 900px) {
+  .podium-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.podium-card {
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.podium-card:hover {
+  transform: translateY(-3px);
+}
+
+.gold-podium {
+  border: 2px solid rgba(251, 191, 36, 0.6);
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.1) 0%, var(--bg-card) 100%);
+  box-shadow: 0 0 25px rgba(251, 191, 36, 0.2);
+}
+
+.silver-podium {
+  border: 1.5px solid rgba(148, 163, 184, 0.5);
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.08) 0%, var(--bg-card) 100%);
+}
+
+.bronze-podium {
+  border: 1.5px solid rgba(205, 127, 50, 0.5);
+  background: linear-gradient(180deg, rgba(205, 127, 50, 0.08) 0%, var(--bg-card) 100%);
+}
+
+.gold-crown-banner {
+  background: linear-gradient(90deg, #b45309, #d97706, #fbbf24);
+  color: #000;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  padding: 0.3rem 0;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: -1.25rem -1.25rem 0.5rem -1.25rem;
+}
+
+.podium-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rank-badge {
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 0.25rem 0.6rem;
+  border-radius: 9999px;
+}
+
+.gold-rank {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+}
+
+.silver-rank {
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.bronze-rank {
+  background: rgba(205, 127, 50, 0.2);
+  color: #fb923c;
+  border: 1px solid rgba(205, 127, 50, 0.4);
+}
+
+.podium-symbol-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.podium-symbol {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.gold-title {
+  font-size: 1.5rem;
+  color: #fbbf24;
+}
+
+.podium-flame-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin: 0.4rem 0;
+}
+
+.gold-flame {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.silver-flame {
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+}
+
+.bronze-flame {
+  background: rgba(205, 127, 50, 0.2);
+  color: #fdba74;
+}
+
+.podium-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+}
+
+.podium-stat {
+  display: flex;
+  flex-direction: column;
+}
+
+.podium-stat span {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.podium-stat strong {
+  font-size: 0.9rem;
+  color: #ffffff;
+}
+
+.podium-reason {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+/* Horizontal Bar Chart List */
+.race-list-card {
+  padding: 1.5rem;
+}
+
+.race-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.race-list-header h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.race-count-tag {
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 0.25rem 0.65rem;
+  border-radius: 9999px;
+  color: var(--text-main);
+}
+
+.race-bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.race-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  transition: background 0.15s ease;
+}
+
+.race-bar-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.gold-row {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.04);
+}
+
+.race-rank-cell {
+  width: 40px;
+  text-align: center;
+}
+
+.rank-num {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.gold-num {
+  color: #fbbf24;
+  font-size: 1.1rem;
+}
+
+.silver-num {
+  color: #cbd5e1;
+  font-size: 1rem;
+}
+
+.bronze-num {
+  color: #fb923c;
+  font-size: 1rem;
+}
+
+.race-info-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.race-sym-line {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.timeframe-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: rgba(139, 92, 246, 0.2);
+  color: #a78bfa;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+}
+
+.price-tag, .trigger-tag {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.trigger-tag {
+  color: var(--primary-cyan);
+  font-weight: 600;
+}
+
+.race-bar-track {
+  width: 100%;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 9999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.race-bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  padding-left: 0.75rem;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  min-width: 40px;
+}
+
+.fill-gold {
+  background: linear-gradient(90deg, #d97706, #fbbf24);
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.4);
+}
+
+.fill-silver {
+  background: linear-gradient(90deg, #64748b, #cbd5e1);
+}
+
+.fill-bronze {
+  background: linear-gradient(90deg, #ea580c, #fb923c);
+}
+
+.fill-standard {
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+}
+
+.race-bar-text {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #000000;
+  white-space: nowrap;
+}
+
+.race-flame-cell {
+  width: 60px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.race-flame-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 8px;
+}
+
+.active-flame {
+  background: rgba(244, 63, 94, 0.15);
+  color: #f43f5e;
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.idle-flame {
+  background: rgba(255, 255, 255, 0.05);
   color: var(--text-dim);
 }
 

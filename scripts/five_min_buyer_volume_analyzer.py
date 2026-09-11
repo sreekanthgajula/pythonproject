@@ -256,6 +256,20 @@ def analyze_5min_good_buyer_volume(symbol: str, kite=None) -> dict:
 
 import html
 
+def is_telegram_alert_allowed(buyer_score: int) -> bool:
+    """
+    Filtering Rule for Telegram Alert Messages:
+    - ALLOW sending Telegram alert ONLY IF BUY CONVICTION RATING is:
+      8/10, 9/10, 10/10 (High Conviction Buy) OR 1/10, 2/10, 3/10 (High Conviction Caution/Neutral).
+    - IGNORE / BLOCK Telegram alert IF BUY CONVICTION RATING is:
+      4/10, 5/10, 6/10, 7/10 (Mid-tier/Rest of messages).
+    """
+    try:
+        score = int(buyer_score)
+        return score in (1, 2, 3, 8, 9, 10)
+    except (ValueError, TypeError):
+        return False
+
 def format_telegram_buyer_analysis_text(symbol: str, db_doc: dict, analysis: dict) -> str:
     """
     Formats the complete Telegram alert message incorporating MongoDB DB details

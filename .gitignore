@@ -223,4 +223,6 @@ __marimo__/
 reports/
 node_modules/
 **/node_modules/
+charts/
+scratch/
 

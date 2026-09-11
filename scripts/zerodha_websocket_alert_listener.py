@@ -118,17 +118,25 @@ class ZerodhaWebSocketAlertEngine:
             # Check if live price crossed the +1% breakout trigger
             if last_price >= trigger_price:
                 alert_key = (symbol, today_str)
-                if alert_key in self.alerted_today:
-                    continue
-
-                self.alerted_today.add(alert_key)
                 recent_high = data["recent_high"]
                 pct_above = ((last_price - recent_high) / recent_high * 100) if recent_high > 0 else 1.0
 
                 logger.info(f"🚨 [REAL-TIME BREAKOUT ALERT] {symbol} crossed trigger price! Current: ₹{last_price:.2f} >= Trigger: ₹{trigger_price:.2f} (+{pct_above:.2f}%)")
 
-                # Dispatch alert notification & trailing +1% ladder update
-                self.dispatch_alert(symbol, last_price, trigger_price, data, token=token)
+                # Dispatch alert notification if not already sent today
+                if alert_key not in self.alerted_today:
+                    self.alerted_today.add(alert_key)
+                    self.dispatch_alert(symbol, last_price, trigger_price, data, token=token)
+                else:
+                    # Still advance trigger price in DB & memory
+                    self.dispatch_alert(symbol, last_price, trigger_price, data, token=token)
+
+                # Recreate Zerodha GTT order at the new trailing level
+                try:
+                    from scripts.zerodha_alert_manager import set_zerodha_1pct_breakout_alert
+                    set_zerodha_1pct_breakout_alert(symbol, timeframe=data.get("timeframe", "monthly"), override_recent_high=last_price)
+                except Exception as regtt_err:
+                    logger.error(f"Failed to auto-recreate trailing GTT order for {symbol}: {regtt_err}")
 
     def _on_order_update(self, ws, data):
         """
@@ -211,32 +219,14 @@ class ZerodhaWebSocketAlertEngine:
             today_str = datetime.now().strftime("%Y-%m-%d")
             alert_key = (clean_sym, today_str)
 
-            if alert_key in self.alerted_today:
-                logger.info(f"Alert already dispatched today for {clean_sym}. Skipping duplicate notification.")
-                return
+            # Dispatch verified alert notification
+            if alert_key not in self.alerted_today:
+                self.alerted_today.add(alert_key)
+                self.dispatch_alert(clean_sym, effective_price, db_trigger_price, matched_meta)
+            else:
+                logger.info(f"[TRAILING STEP] Advancing trailing GTT ladder for {clean_sym} at new high ₹{effective_price:.2f}.")
 
-            self.alerted_today.add(alert_key)
-
-            logger.info(
-                f"\n=======================================================\n"
-                f" 🚨 [ZERODHA GTT BREAKOUT VERIFIED VIA ORDER REJECTION]\n"
-                f" Symbol: {clean_sym} ({matched_meta['timeframe'].upper()})\n"
-                f" Order Status: {status} (Qty: {quantity})\n"
-                f" Rejection/Order Price: ₹{effective_price:.2f} >= DB Trigger: ₹{db_trigger_price:.2f}\n"
-                f" Reason: {status_message}\n"
-                f"======================================================="
-            )
-
-            # Enrich notification text to clarify Zerodha order rejection
-            meta_copy = matched_meta.copy()
-            meta_copy["rejection_reason"] = status_message
-            meta_copy["gtt_status"] = status
-            meta_copy["order_id"] = order_id
-
-            # Dispatch verified alert notification and advance trailing +1% ladder
-            self.dispatch_alert(clean_sym, effective_price, db_trigger_price, meta_copy)
-
-            # Automatically recreate Zerodha GTT order for 5,000 quantity at the new trailing trigger price (+1%)
+            # ALWAYS recreate Zerodha GTT order for 5,000 quantity at the new trailing trigger price (+1%)
             try:
                 from scripts.zerodha_alert_manager import set_zerodha_1pct_breakout_alert
                 set_zerodha_1pct_breakout_alert(clean_sym, timeframe=matched_meta["timeframe"], override_recent_high=effective_price)
@@ -315,19 +305,26 @@ class ZerodhaWebSocketAlertEngine:
         # 2. Execute 5-Minute Good Buyer Volume Analysis
         buyer_analysis = {}
         try:
-            from scripts.five_min_buyer_volume_analyzer import analyze_5min_good_buyer_volume, format_telegram_buyer_analysis_text
+            from scripts.five_min_buyer_volume_analyzer import analyze_5min_good_buyer_volume, format_telegram_buyer_analysis_text, is_telegram_alert_allowed
             buyer_analysis = analyze_5min_good_buyer_volume(symbol, kite=None)
             logger.info(f"5-Min Good Buyer Analysis for {symbol}: BuySignal={buyer_analysis.get('buy_signal')} | Rating={buyer_analysis.get('score_out_of_10')}/10")
         except Exception as analysis_err:
             logger.error(f"5-Min Good Buyer Volume Analysis failed for {symbol}: {analysis_err}")
 
-        # 3. Dispatch enriched alert via Telegram
+        # 3. Dispatch enriched alert via Telegram ONLY IF BUY CONVICTION RATING is 8/10, 9/10, 10/10 or 1/10, 2/10, 3/10
         try:
             telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
             telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            
+            buyer_score = buyer_analysis.get("score_out_of_10", 0)
+
             if telegram_token and telegram_chat_id:
-                from scripts.five_min_buyer_volume_analyzer import format_telegram_buyer_analysis_text
+                from scripts.five_min_buyer_volume_analyzer import is_telegram_alert_allowed, format_telegram_buyer_analysis_text
+                
+                # Filter: Send Telegram alerts ONLY IF rating is 8, 9, 10 or 1, 2, 3. Ignore 4, 5, 6, 7.
+                if not is_telegram_alert_allowed(buyer_score):
+                    logger.info(f"⏭️ [TELEGRAM FILTER] Ignored Telegram message for {symbol}: BUY CONVICTION RATING is {buyer_score}/10 (Only 8/10, 9/10, 10/10 or 1/10, 2/10, 3/10 are sent to Telegram).")
+                    return
+
                 tg_text = format_telegram_buyer_analysis_text(symbol, meta, buyer_analysis)
                 
                 tg_url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
@@ -338,7 +335,7 @@ class ZerodhaWebSocketAlertEngine:
                 }
                 tg_resp = requests.post(tg_url, json=tg_payload, timeout=12)
                 if tg_resp.status_code == 200:
-                    logger.info(f"Successfully dispatched 5-Min Good Buyer Volume Telegram Alert for {symbol}!")
+                    logger.info(f"Successfully dispatched 5-Min Good Buyer Volume Telegram Alert for {symbol} (Conviction Rating: {buyer_score}/10)!")
                 else:
                     logger.error(f"Telegram dispatch failed: Status {tg_resp.status_code}, Body: {tg_resp.text}")
             else:

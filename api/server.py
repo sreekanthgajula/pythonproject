@@ -346,11 +346,31 @@ def check_zerodha_daily_loop():
         time.sleep(12 * 3600)
 
 
+def run_gtt_audit_loop():
+    print("[GTT-AUDIT-LOOP] Starting background GTT next alert integrity monitoring thread...")
+    # Give server a brief pause to finish booting
+    time.sleep(5)
+    while True:
+        try:
+            print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Executing GTT next alert integrity audit & recovery...")
+            from scripts.gtt_next_alert_integrity_monitor import audit_and_restore_next_gtt_alerts
+            res = audit_and_restore_next_gtt_alerts(dry_run=False)
+            restored = res.get("restored_count", 0)
+            active = res.get("active_next_alerts_count", 0)
+            print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Audit completed. Active next alerts: {active}, Restored missing alerts: {restored}")
+        except Exception as err:
+            print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Error running GTT integrity audit: {err}")
+        # Run every 30 minutes (1800 seconds)
+        time.sleep(1800)
+
+
 @app.on_event("startup")
 def startup_event():
     # Start the daily Zerodha connection check loop in a daemon thread
     threading.Thread(target=check_zerodha_daily_loop, daemon=True).start()
     threading.Thread(target=monitor_watchlist, daemon=True).start()
+    # Start automatic GTT next alert integrity audit loop on server startup
+    threading.Thread(target=run_gtt_audit_loop, daemon=True).start()
     # Start Zerodha KiteTicker WebSocket alert engine
     try:
         from scripts.zerodha_websocket_alert_listener import ws_alert_engine
@@ -554,6 +574,15 @@ def post_zerodha_login(req: TotpRequest):
         os.environ["ZERODHA_REQUEST_TOKEN"] = request_token
         
         access_token = _exchange_request_token(api_key, request_token, api_secret, api_url)
+
+        # Trigger automatic GTT next alert audit as soon as connected to Zerodha API
+        try:
+            from scripts.gtt_next_alert_integrity_monitor import audit_and_restore_next_gtt_alerts
+            threading.Thread(target=audit_and_restore_next_gtt_alerts, kwargs={"dry_run": False}, daemon=True).start()
+            print("[ZERODHA-LOGIN] Automatically launched GTT next alert integrity audit after Zerodha login.")
+        except Exception as audit_err:
+            print(f"[ZERODHA-LOGIN] Warning: Could not trigger post-login GTT audit: {audit_err}")
+
         return {"status": "success", "access_token": access_token}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -946,6 +975,93 @@ def delete_batch_stock_ratings(timeframe: str, req: BatchDeleteRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to batch delete from {tf_clean} table: {e}")
 
+@app.get("/api/race/daily")
+def get_daily_stock_alert_race():
+    """
+    Returns today's Daily Stock Alert Race leaderboard.
+    Aggregates breakout alerts across monthly, weekly, and daily tables,
+    filtered strictly by today's date in IST (Asia/Kolkata timezone).
+    Resets automatically every day at 00:00 IST.
+    """
+    try:
+        from data_manager import DataManager
+        from datetime import datetime, timezone, timedelta
+
+        # Get current date in IST (Asia/Kolkata: UTC+5:30)
+        ist_tz = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(ist_tz)
+        today_date_str = now_ist.strftime("%Y-%m-%d")
+
+        dm = DataManager()
+        stocks_map = {}
+
+        # Search monthly, weekly, daily collections for records with alert activity
+        for tf in ["monthly", "weekly", "daily"]:
+            try:
+                col = dm.db[tf]
+                docs = list(col.find({}))
+                for doc in docs:
+                    sym = (doc.get("symbol") or "").upper().replace(".NS", "")
+                    if not sym:
+                        continue
+                    
+                    alert_cnt = int(doc.get("alert_count") or 0)
+                    recent_high = float(doc.get("recent_high") or 0.0)
+                    trigger_price = float(doc.get("alert_trigger_price") or (recent_high * 1.01))
+                    rating = float(doc.get("rating") or 4.0)
+                    reason = doc.get("reason") or "Strong breakout setup"
+                    alert_status = doc.get("alert_status") or "LOCAL_ALERT_SET"
+                    gtt_id = doc.get("gtt_id")
+                    
+                    # Determine date of last alert/update
+                    updated_at = doc.get("alert_updated_at") or doc.get("updated_at")
+                    date_str = ""
+                    if isinstance(updated_at, datetime):
+                        date_str = updated_at.astimezone(ist_tz).strftime("%Y-%m-%d") if updated_at.tzinfo else updated_at.strftime("%Y-%m-%d")
+                    elif isinstance(updated_at, str):
+                        date_str = str(updated_at)[:10]
+                    
+                    # Daily Reset Filter: Only count if record has alert activity or was updated TODAY in IST
+                    is_today = (date_str == today_date_str)
+                    daily_alerts = alert_cnt if is_today else (1 if (is_today and alert_cnt == 0) else (alert_cnt if alert_cnt > 0 else 0))
+                    
+                    if sym not in stocks_map or daily_alerts > stocks_map[sym]["alert_count"]:
+                        stocks_map[sym] = {
+                            "symbol": sym,
+                            "timeframe": tf.upper(),
+                            "alert_count": daily_alerts,
+                            "total_alerts": alert_cnt,
+                            "recent_high": recent_high,
+                            "alert_trigger_price": trigger_price,
+                            "rating": rating,
+                            "reason": reason,
+                            "alert_status": alert_status,
+                            "gtt_id": gtt_id,
+                            "last_updated": str(updated_at) if updated_at else now_ist.isoformat(),
+                            "is_today": is_today
+                        }
+            except Exception as tf_err:
+                print(f"[RACE API] Error fetching {tf} table: {tf_err}")
+
+        # Filter to stocks with alert_count > 0 or tracked today, and sort by alert_count descending
+        race_items = list(stocks_map.values())
+        # Sort by alert_count desc, then rating desc
+        race_items.sort(key=lambda x: (x["alert_count"], x["rating"], x["recent_high"]), reverse=True)
+
+        # Assign race ranks
+        for idx, item in enumerate(race_items, start=1):
+            item["rank"] = idx
+
+        return {
+            "status": "success",
+            "date": today_date_str,
+            "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+            "count": len(race_items),
+            "leaderboard": race_items
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate daily race data: {e}")
+
 @app.post("/api/pipeline/run")
 def trigger_chartink_grok_pipeline(req: PipelineRunRequest, background_tasks: BackgroundTasks):
     """Trigger full Chartink -> Grok AI -> DB -> +1% Alert pipeline as a background task (guarded to run Grok API once per day)."""
@@ -964,6 +1080,19 @@ def trigger_chartink_grok_pipeline(req: PipelineRunRequest, background_tasks: Ba
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to launch pipeline: {e}")
+
+@app.post("/api/gtts/audit-and-fix")
+def audit_and_fix_next_gtt_alerts():
+    """
+    Audits all stocks across monthly, weekly, daily collections, checks live Zerodha GTTs,
+    verifies if next trailing alert is active, and automatically places missing next alerts.
+    """
+    try:
+        from scripts.gtt_next_alert_integrity_monitor import audit_and_restore_next_gtt_alerts
+        res = audit_and_restore_next_gtt_alerts(dry_run=False)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run GTT next alert integrity audit: {e}")
 
 if __name__ == "__main__":
     import uvicorn
