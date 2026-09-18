@@ -42,6 +42,54 @@ active_alerts = []
 last_alerted_candle = {}
 telegram_sent_set = set()
 
+_weekly_returns_cache = {
+    "timestamp": 0.0,
+    "data": {}
+}
+
+def _get_weekly_returns_cached(stock_symbols: list) -> dict:
+    import time, yfinance as yf
+    now = time.time()
+    if now - _weekly_returns_cache["timestamp"] < 600 and _weekly_returns_cache["data"]:
+        return _weekly_returns_cache["data"]
+
+    weekly_returns = {}
+    try:
+        all_syms = [s + ".NS" for s in stock_symbols if s]
+        if all_syms:
+            df = yf.download(all_syms, period="10d", progress=False)
+            close_df = df["Close"] if (hasattr(df, "__getitem__") and "Close" in df) else df
+            if hasattr(close_df, "columns"):
+                close_df = close_df.dropna(how="all").ffill().bfill()
+                for sym in stock_symbols:
+                    col = sym + ".NS"
+                    if col in close_df.columns:
+                        s_series = close_df[col].dropna()
+                        if len(s_series) >= 2:
+                            p_old = float(s_series.iloc[0])
+                            p_new = float(s_series.iloc[-1])
+                            if p_old > 0:
+                                pct = round(((p_new - p_old) / p_old) * 100.0, 2)
+                                weekly_returns[sym] = pct
+            elif hasattr(close_df, "iloc"):
+                s_series = close_df.dropna()
+                if len(s_series) >= 2:
+                    p_old = float(s_series.iloc[0])
+                    p_new = float(s_series.iloc[-1])
+                    if p_old > 0:
+                        pct = round(((p_new - p_old) / p_old) * 100.0, 2)
+                        for sym in stock_symbols:
+                            weekly_returns[sym] = pct
+            if weekly_returns:
+                _weekly_returns_cache["timestamp"] = now
+                _weekly_returns_cache["data"] = weekly_returns
+    except Exception as yf_err:
+        print(f"[RACE API] Weekly returns calculation notice: {yf_err}")
+        if _weekly_returns_cache["data"]:
+            return _weekly_returns_cache["data"]
+
+    return weekly_returns or _weekly_returns_cache.get("data", {})
+
 class WatchlistRequest(BaseModel):
     ticker: str
 
@@ -1133,28 +1181,8 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             except Exception as tf_err:
                 print(f"[RACE API] Error fetching {tf} table: {tf_err}")
 
-        # Compute 1-week percentage price change for stocks
-        weekly_returns = {}
-        try:
-            import yfinance as yf
-            all_syms = [s + ".NS" for s in stocks_map.keys()]
-            if all_syms:
-                df = yf.download(all_syms, period="10d", progress=False)
-                close_df = df["Close"] if (hasattr(df, "__getitem__") and "Close" in df) else df
-                if hasattr(close_df, "columns"):
-                    close_df = close_df.dropna(how="all").ffill().bfill()
-                    for sym in stocks_map.keys():
-                        col = sym + ".NS"
-                        if col in close_df.columns:
-                            s_series = close_df[col].dropna()
-                            if len(s_series) >= 2:
-                                p_old = float(s_series.iloc[0])
-                                p_new = float(s_series.iloc[-1])
-                                if p_old > 0:
-                                    pct = round(((p_new - p_old) / p_old) * 100.0, 2)
-                                    weekly_returns[sym] = pct
-        except Exception as yf_err:
-            print(f"[RACE API] Weekly returns calculation notice: {yf_err}")
+        # Compute 1-week percentage price change for stocks using fast server cache
+        weekly_returns = _get_weekly_returns_cached(list(stocks_map.keys()))
 
         filtered_items = []
         for sym, item in stocks_map.items():

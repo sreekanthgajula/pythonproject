@@ -25,54 +25,87 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
   const [searchQuery, setSearchQuery] = useState('');
   const [lastUpdated, setLastUpdated] = useState('');
 
+  const cacheRef = React.useRef({});
+  const activeModeRef = React.useRef(activeMode);
+  activeModeRef.current = activeMode;
+
   useEffect(() => {
     if (pastWeekOnly) setActiveMode('past_week');
     else if (todayOnly) setActiveMode('today');
     else setActiveMode('all');
   }, [todayOnly, pastWeekOnly]);
 
-  const fetchRaceLeaderboard = async () => {
-    setLoading(true);
+  const fetchRaceLeaderboard = async (targetMode = activeMode) => {
+    // If cached result exists, serve immediately for 0ms snappy response
+    if (cacheRef.current[targetMode]) {
+      const cached = cacheRef.current[targetMode];
+      setRaceData(cached.leaderboard || []);
+      setTodayDate(cached.date || new Date().toISOString().slice(0, 10));
+      setLastUpdated(cached.timestamp_ist || new Date().toLocaleTimeString());
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
     try {
       let endpoint = `${API_BASE_URL}/race/daily?today_only=false`;
-      if (activeMode === 'today') {
+      if (targetMode === 'today') {
         endpoint = `${API_BASE_URL}/race/daily?today_only=true`;
-      } else if (activeMode === 'past_week') {
+      } else if (targetMode === 'past_week') {
         endpoint = `${API_BASE_URL}/race/daily?past_week_only=true`;
       }
 
       const res = await fetch(endpoint);
       if (res.ok) {
         const json = await res.json();
-        setRaceData(json.leaderboard || []);
-        setTodayDate(json.date || new Date().toISOString().slice(0, 10));
-        setLastUpdated(json.timestamp_ist || new Date().toLocaleTimeString());
+        // Update cache
+        cacheRef.current[targetMode] = json;
+
+        // Only update active state if user is still on targetMode (prevent race conditions)
+        if (activeModeRef.current === targetMode) {
+          setRaceData(json.leaderboard || []);
+          setTodayDate(json.date || new Date().toISOString().slice(0, 10));
+          setLastUpdated(json.timestamp_ist || new Date().toLocaleTimeString());
+        }
       }
     } catch (err) {
       console.error('Error fetching race leaderboard:', err);
     } finally {
-      setLoading(false);
+      if (activeModeRef.current === targetMode) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchRaceLeaderboard();
-    const interval = setInterval(fetchRaceLeaderboard, 10000);
+    fetchRaceLeaderboard(activeMode);
+    const interval = setInterval(() => fetchRaceLeaderboard(activeModeRef.current), 10000);
     return () => clearInterval(interval);
   }, [activeMode]);
 
-  const filteredRace = raceData.filter(item => {
+  // Strict defensive mode filtering to guarantee consistent stock subsets per tab
+  const modeFilteredRace = raceData.filter(item => {
+    if (activeMode === 'today') {
+      return item.is_today && (item.alert_count || 0) > 0;
+    }
+    if (activeMode === 'past_week') {
+      return item.weekly_change_pct !== undefined && item.weekly_change_pct > 0;
+    }
+    return true; // All-Time
+  });
+
+  const filteredRace = modeFilteredRace.filter(item => {
     const sym = item.symbol || '';
     const reason = item.reason || '';
     const query = searchQuery.toLowerCase().trim();
     return sym.toLowerCase().includes(query) || reason.toLowerCase().includes(query);
   });
 
-  const top1 = raceData[0];
-  const top2 = raceData[1];
-  const top3 = raceData[2];
+  const top1 = modeFilteredRace[0];
+  const top2 = modeFilteredRace[1];
+  const top3 = modeFilteredRace[2];
 
-  const maxAlerts = Math.max(...raceData.map(d => (activeMode === 'past_week' ? (d.weekly_change_pct || 1) : (d.alert_count || 1))), 1);
+  const maxAlerts = Math.max(...modeFilteredRace.map(d => (activeMode === 'past_week' ? (d.weekly_change_pct || 1) : (d.alert_count || 1))), 1);
 
   return (
     <div className="race-container">
