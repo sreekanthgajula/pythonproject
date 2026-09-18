@@ -17,22 +17,62 @@ import {
   ShieldCheck,
   CheckCircle2,
   Trash2,
-  Trophy
+  Trophy,
+  Sparkles
 } from 'lucide-react';
 import StockAlertRaceChart from './components/StockAlertRaceChart';
+import DerivativesSpeedometer from './components/DerivativesSpeedometer';
 
 const API_BASE_URL = '/api';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('monthly'); // 'monthly' | 'weekly' | 'daily' | 'active_gtts' | 'race'
+  const [activeTab, setActiveTab] = useState('monthly'); // 'monthly' | 'weekly' | 'daily' | 'manual' | 'active_gtts' | 'todays_race' | 'race'
   const [stocksData, setStocksData] = useState([]);
   const [gttsData, setGttsData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [runningPipeline, setRunningPipeline] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [wsStatus, setWsStatus] = useState({ running: false, monitored_tokens_count: 0 });
-  const [tabCounts, setTabCounts] = useState({ monthly: 0, weekly: 0, daily: 0, active_gtts: 0, race: 0 });
+  const [tabCounts, setTabCounts] = useState({ monthly: 0, weekly: 0, daily: 0, manual: 0, active_gtts: 0, todays_race: 0, race: 0 });
   const [selectedSymbols, setSelectedSymbols] = useState([]);
+
+  // Manual Stock Modal State
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [resettingGttSymbol, setResettingGttSymbol] = useState(null);
+  const [resettingAllGtts, setResettingAllGtts] = useState(false);
+  const [syncingGtts, setSyncingGtts] = useState(false);
+  const [manualSymbol, setManualSymbol] = useState('');
+  const [manualReason, setManualReason] = useState('');
+  const [addingManualStock, setAddingManualStock] = useState(false);
+  const [manualError, setManualError] = useState('');
+
+  // NSE Derivatives Analyst State
+  const [derivativesData, setDerivativesData] = useState(null);
+  const [loadingDerivatives, setLoadingDerivatives] = useState(false);
+  const [loadingGrokNews, setLoadingGrokNews] = useState(false);
+
+  const fetchDerivativesAnalysis = async (forceGrok = false) => {
+    if (forceGrok) {
+      setLoadingGrokNews(true);
+    } else {
+      setLoadingDerivatives(true);
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/derivatives/analysis?force_grok=${forceGrok}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'success') {
+          setDerivativesData(data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch derivatives analysis:', err);
+    } finally {
+      setLoadingDerivatives(false);
+      setLoadingGrokNews(false);
+    }
+  };
+
 
   // Sorting state: default sort by 'rating' descending
   const [sortKey, setSortKey] = useState('rating'); // 'rating' | 'updated_at' | 'alert_count' | 'symbol' | 'recent_high' | 'alert_trigger_price'
@@ -40,7 +80,7 @@ export default function App() {
 
   // Fetch stocks data for the active timeframe
   const fetchTimeframeRatings = async (timeframe) => {
-    if (timeframe === 'race') return;
+    if (timeframe === 'race' || timeframe === 'todays_race') return;
     if (timeframe === 'active_gtts' || timeframe === 'gtts') {
       fetchZerodhaGtts();
       return;
@@ -78,8 +118,8 @@ export default function App() {
         }
       }
 
-      // 2. Fetch DB stocks across monthly, weekly, daily that have alert_count > 0 or triggered alert status
-      for (const tf of ['monthly', 'weekly', 'daily']) {
+      // 2. Fetch DB stocks across monthly, weekly, daily, manual that have alert_count > 0 or triggered alert status
+      for (const tf of ['monthly', 'weekly', 'daily', 'manual']) {
         try {
           const dbRes = await fetch(`${API_BASE_URL}/ratings/${tf}`);
           if (dbRes.ok) {
@@ -111,10 +151,11 @@ export default function App() {
         }
       }
 
+      const activeOnlyCount = combinedGtts.filter(g => (g.status || '').toUpperCase().includes('ACTIVE')).length;
       setGttsData(combinedGtts);
       setTabCounts(prev => ({
         ...prev,
-        active_gtts: combinedGtts.length
+        active_gtts: activeOnlyCount
       }));
     } catch (err) {
       console.error('Error fetching GTTs:', err);
@@ -123,9 +164,45 @@ export default function App() {
     }
   };
 
+  // Add stock manually endpoint handler
+  const handleAddManualStock = async (e) => {
+    if (e) e.preventDefault();
+    const cleanSym = manualSymbol.trim().toUpperCase();
+    if (!cleanSym) {
+      setManualError('Please enter a valid stock symbol.');
+      return;
+    }
+    setAddingManualStock(true);
+    setManualError('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/manual/add-stock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: cleanSym, reason: manualReason.trim() || 'Manually added high potency stock' })
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        alert(`✅ Stock '${json.symbol}' added successfully to Manual table with 1% Zerodha GTT Alert!`);
+        setIsAddModalOpen(false);
+        setManualSymbol('');
+        setManualReason('');
+        setActiveTab('manual');
+        fetchTimeframeRatings('manual');
+        fetchAllTabCounts();
+      } else {
+        const errMsg = json.detail || json.message || 'Failed to add stock manually.';
+        setManualError(errMsg);
+      }
+    } catch (err) {
+      setManualError(`Error adding stock: ${err.message || err}`);
+    } finally {
+      setAddingManualStock(false);
+    }
+  };
+
   // Fetch counts for all timeframes for tab badges
   const fetchAllTabCounts = async () => {
-    for (const tf of ['monthly', 'weekly', 'daily']) {
+    for (const tf of ['monthly', 'weekly', 'daily', 'manual']) {
       try {
         const res = await fetch(`${API_BASE_URL}/ratings/${tf}`);
         if (res.ok) {
@@ -150,7 +227,7 @@ export default function App() {
         }
       }
 
-      for (const tf of ['monthly', 'weekly', 'daily']) {
+      for (const tf of ['monthly', 'weekly', 'daily', 'manual']) {
         try {
           const dbRes = await fetch(`${API_BASE_URL}/ratings/${tf}`);
           if (dbRes.ok) {
@@ -174,7 +251,17 @@ export default function App() {
     }
 
     try {
-      const raceRes = await fetch(`${API_BASE_URL}/race/daily`);
+      const todaysRaceRes = await fetch(`${API_BASE_URL}/race/daily?today_only=true`);
+      if (todaysRaceRes.ok) {
+        const json = await todaysRaceRes.json();
+        setTabCounts(prev => ({ ...prev, todays_race: json.count || 0 }));
+      }
+    } catch (err) {
+      console.error('Error fetching todays_race tab count:', err);
+    }
+
+    try {
+      const raceRes = await fetch(`${API_BASE_URL}/race/daily?today_only=false`);
       if (raceRes.ok) {
         const json = await raceRes.json();
         setTabCounts(prev => ({ ...prev, race: json.count || 0 }));
@@ -259,16 +346,27 @@ export default function App() {
     fetchAllTabCounts();
     fetchWsStatus();
     fetchZerodhaStatus();
+    fetchDerivativesAnalysis();
 
-    // Auto refresh every 10 seconds
+    // Fast status auto refresh every 10 seconds
     const intervalId = setInterval(() => {
       fetchTimeframeRatings(activeTab);
+      fetchAllTabCounts();
       fetchWsStatus();
       fetchZerodhaStatus();
     }, 10000);
 
-    return () => clearInterval(intervalId);
+    // Derivatives OI & Speedometer auto refresh every 5 minutes (300,000 ms) - Low Server Pressure
+    const derivativesIntervalId = setInterval(() => {
+      fetchDerivativesAnalysis(false);
+    }, 300000);
+
+    return () => {
+      clearInterval(intervalId);
+      clearInterval(derivativesIntervalId);
+    };
   }, [activeTab]);
+
 
   // Trigger Chartink -> Grok -> DB -> Alert pipeline run
   const handleRunPipeline = async (isForce = false) => {
@@ -303,24 +401,104 @@ export default function App() {
     }
   };
 
+
+  // Reset 1% GTT alert from live current trading price for a single stock
+  const handleResetSingleGtt = async (symbol) => {
+    setResettingGttSymbol(symbol);
+    try {
+      const res = await fetch(`${API_BASE_URL}/stocks/${encodeURIComponent(symbol)}/reset-gtt?timeframe=${activeTab}`, {
+        method: 'POST'
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        alert(`⚡ 1% GTT RESET COMPLETE FOR ${symbol}!\n\n${json.message}`);
+        fetchTimeframeRatings(activeTab);
+        fetchZerodhaGtts();
+      } else {
+        alert(`❌ Failed to reset GTT for ${symbol}: ${json.detail || json.message || 'Unknown error'}`);
+      }
+    } catch (err) {
+      alert(`❌ Error resetting GTT for ${symbol}: ${err}`);
+    } finally {
+      setResettingGttSymbol(null);
+    }
+  };
+
+  // Reset 1% GTT alerts from live current trading prices for ALL stocks in active tab
+  const handleResetAllGtts = async (tf) => {
+    const tabName = tf === 'manual' ? 'MANUAL' : tf.toUpperCase();
+    const confirmed = window.confirm(
+      `⚡ RESET ALL 1% GTT ALERTS FOR ${tabName} STOCKS?\n\nThis will cancel all previous GTT alerts on Zerodha for ${tabName} stocks and place NEW 1% GTT breakout alerts based on their LIVE CURRENT TRADING PRICES.`
+    );
+    if (!confirmed) return;
+
+    setResettingAllGtts(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/stocks/reset-all-gtts?timeframe=${tf}`, {
+        method: 'POST'
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        alert(`⚡ BATCH 1% GTT RESET COMPLETE!\n\n${json.message}`);
+        fetchTimeframeRatings(activeTab);
+        fetchZerodhaGtts();
+      } else {
+        alert(`❌ Failed to batch reset GTT alerts: ${json.detail || json.message || 'Unknown error'}`);
+      }
+    } catch (err) {
+      alert(`❌ Error resetting GTT alerts: ${err}`);
+    } finally {
+      setResettingAllGtts(false);
+    }
+  };
+
+  // Synchronize & deduplicate GTT orders on Zerodha account with DB watchlist
+  const handleSyncGtts = async () => {
+    setSyncingGtts(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/zerodha/sync-gtts`, {
+        method: 'POST'
+      });
+      const json = await res.json();
+      if (res.ok && json.status === 'success') {
+        alert(`🔄 ZERODHA GTT SYNC COMPLETE!\n\n${json.message}`);
+        fetchZerodhaGtts();
+        fetchAllTabCounts();
+        if (activeTab === 'active_gtts' || activeTab === 'gtts') {
+          fetchTimeframeRatings('gtts');
+        }
+      } else {
+        alert(`❌ Zerodha GTT sync failed: ${json.detail || json.message || 'Unknown error'}`);
+      }
+    } catch (err) {
+      alert(`❌ Error syncing GTTs: ${err}`);
+    } finally {
+      setSyncingGtts(false);
+    }
+  };
+
   // Handle deleting all stocks in the active timeframe collection
   const handleDeleteAllTimeframeStocks = async () => {
-    if (activeTab === 'gtts') return;
+    if (activeTab === 'gtts' || activeTab === 'race' || activeTab === 'todays_race') return;
+    const isManual = activeTab === 'manual';
+    const tabName = isManual ? 'MANUAL' : activeTab.toUpperCase();
     const confirmed = window.confirm(
-      `⚠️ ARE YOU SURE?\n\nThis will PERMANENTLY DELETE ALL stocks from the ${activeTab.toUpperCase()} database table!`
+      `⚠️ ARE YOU SURE YOU WANT TO DELETE ALL ${tabName} STOCKS?\n\nThis will PERMANENTLY DELETE ALL stock records from the ${tabName} database collection and CANCEL their active Zerodha GTT breakout alerts!`
     );
     if (!confirmed) return;
 
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/ratings/${activeTab}`, {
+      const endpoint = isManual ? `${API_BASE_URL}/manual/clear-all` : `${API_BASE_URL}/ratings/${activeTab}`;
+      const res = await fetch(endpoint, {
         method: 'DELETE'
       });
       const json = await res.json();
       if (res.ok && json.status === 'success') {
-        alert(`Successfully deleted ${json.deleted_count} stocks from ${activeTab.toUpperCase()} table.`);
+        alert(`✅ Successfully deleted ${json.deleted_count} stock records from ${tabName} table and cancelled associated Zerodha GTT alerts.`);
         fetchTimeframeRatings(activeTab);
         fetchAllTabCounts();
+        fetchZerodhaGtts();
       } else {
         alert(`Failed to delete: ${json.detail || json.message || 'Unknown error'}`);
       }
@@ -582,6 +760,26 @@ export default function App() {
           </button>
 
           <button
+            className="btn-sync-gtts"
+            onClick={handleSyncGtts}
+            disabled={syncingGtts}
+            title="Deduplicate & sync active GTT orders on Zerodha with DB watchlist (Removes duplicates & orphans)"
+          >
+            {syncingGtts ? (
+              <>
+                <div className="loading-spinner"></div>
+                <span>Syncing GTTs...</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw size={16} />
+                <span>Sync GTTs</span>
+              </>
+            )}
+          </button>
+
+
+          <button
             className="btn-icon-secondary"
             onClick={() => fetchTimeframeRatings(activeTab)}
             title="Refresh Data"
@@ -638,47 +836,26 @@ export default function App() {
         {zerodhaMsg && <div className="zerodha-msg-feedback">{zerodhaMsg}</div>}
       </div>
 
-      {/* Summary Stats Overview Cards */}
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-header">
-            <span className="stat-title">Active Timeframe Stocks</span>
-            <Layers className="stat-icon" color="#38bdf8" />
-          </div>
-          <div className="stat-value">{activeTab === 'active_gtts' ? gttsData.length : stocksData.length}</div>
-          <div className="stat-desc">{activeTab === 'active_gtts' ? 'Zerodha & Triggered GTT Alerts' : `DB records in ${activeTab.toUpperCase()} table`}</div>
-        </div>
 
-        <div className="stat-card">
-          <div className="stat-header">
-            <span className="stat-title">High Conviction (⭐ &ge; 4.0)</span>
-            <Star className="stat-icon" color="#10b981" />
-          </div>
-          <div className="stat-value">{highConvictionCount}</div>
-          <div className="stat-desc">Filtered by Grok AI analysis</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-header">
-            <span className="stat-title">Alert Triggers Count</span>
-            <Flame className="stat-icon" color="#f43f5e" />
-          </div>
-          <div className="stat-value">{totalAlertTriggers}</div>
-          <div className="stat-desc">Total times 1% alerts triggered</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-header">
-            <span className="stat-title">Active & Triggered GTTs</span>
-            <ShieldCheck className="stat-icon" color="#10b981" />
-          </div>
-          <div className="stat-value">{tabCounts.active_gtts || 0}</div>
-          <div className="stat-desc">Zerodha & Triggered GTT Alerts</div>
-        </div>
-      </div>
+      {/* NSE Derivatives Analyst Speedometer Card */}
+      <DerivativesSpeedometer
+        data={derivativesData}
+        loading={loadingDerivatives}
+        loadingGrokNews={loadingGrokNews}
+        onRefresh={fetchDerivativesAnalysis}
+        onUpdateGrok={fetchDerivativesAnalysis}
+        onFocusConnect={() => {
+          const totpInput = document.querySelector('.zerodha-totp-input');
+          if (totpInput) {
+            totpInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            totpInput.focus();
+          }
+        }}
+      />
 
       {/* Prominent Tabs Navigation */}
       <div className="tabs-header-container">
+
         <nav className="tabs-nav">
           <button
             className={`tab-btn ${activeTab === 'monthly' ? 'active' : ''}`}
@@ -707,6 +884,16 @@ export default function App() {
             <span className="tab-badge">{tabCounts.daily || 0}</span>
           </button>
 
+          {/* 🌟 TAB 4: MANUAL HIGH POTENCY TAB */}
+          <button
+            className={`tab-btn ${activeTab === 'manual' ? 'active' : ''}`}
+            onClick={() => setActiveTab('manual')}
+          >
+            <Sparkles size={16} color="#ec4899" />
+            <span>Manual 🌟</span>
+            <span className="tab-badge" style={{ background: '#ec4899', color: '#fff' }}>{tabCounts.manual || 0}</span>
+          </button>
+
           {/* ⚡ TAB 4: ACTIVE & TRIGGERED ZERODHA GTTS */}
           <button
             className={`tab-btn ${activeTab === 'active_gtts' || activeTab === 'gtts' ? 'active' : ''}`}
@@ -718,21 +905,47 @@ export default function App() {
             <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.active_gtts || 0}</span>
           </button>
 
-          {/* 🏎️ TAB 5: DAILY STOCK ALERT RACE */}
+          {/* 🏎️ TAB 5: TODAY'S STOCK ALERT RACE (Current Day Only) */}
+          <button
+            className={`tab-btn ${activeTab === 'todays_race' ? 'active' : ''}`}
+            onClick={() => setActiveTab('todays_race')}
+            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
+          >
+            <Trophy size={16} color="#38bdf8" />
+            <span>🏎️ Today's Race</span>
+            <span className="tab-badge" style={{ background: '#38bdf8', color: '#fff' }}>{tabCounts.todays_race || 0}</span>
+          </button>
+
+          {/* 🏆 TAB 6: ALL-TIME STOCK ALERT RACE */}
           <button
             className={`tab-btn ${activeTab === 'race' ? 'active' : ''}`}
             onClick={() => setActiveTab('race')}
             style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
           >
             <Trophy size={16} color="#f59e0b" />
-            <span>🏎️ Race</span>
+            <span>🏆 All-Time Race</span>
             <span className="tab-badge" style={{ background: '#f59e0b', color: '#fff' }}>{tabCounts.race || 0}</span>
           </button>
         </nav>
 
         {/* Quick Sorting Pills & Delete All Button (Hidden on Active GTTS & Race tabs) */}
-        {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && (
+        {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && (
           <div className="sort-controls">
+            {activeTab === 'manual' && (
+              <button
+                className="btn-add-manual-stock"
+                onClick={() => {
+                  setManualError('');
+                  setIsAddModalOpen(true);
+                }}
+                title="Manually add a high potency stock to track and set 1% GTT alert"
+                style={{ marginRight: '0.5rem' }}
+              >
+                <Sparkles size={16} />
+                <span>+ Add Stock Manually</span>
+              </button>
+            )}
+
             <span className="sort-label">Sort By:</span>
             <button
               className={`sort-pill ${sortKey === 'rating' ? 'active' : ''}`}
@@ -758,6 +971,25 @@ export default function App() {
               <span>Alert Count {sortKey === 'alert_count' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
             </button>
 
+            <button
+              className="btn-gtt-reset-all"
+              onClick={() => handleResetAllGtts(activeTab)}
+              disabled={loading || stocksData.length === 0 || resettingAllGtts}
+              title={`Cancel old GTTs and set new 1% GTT breakout alerts from current trading prices for all ${activeTab.toUpperCase()} stocks`}
+            >
+              {resettingAllGtts ? (
+                <>
+                  <div className="loading-spinner" style={{ width: '13px', height: '13px' }}></div>
+                  <span>Resetting GTTs...</span>
+                </>
+              ) : (
+                <>
+                  <Zap size={14} color="#f59e0b" />
+                  <span>⚡ Reset 1% GTTs (Current Price)</span>
+                </>
+              )}
+            </button>
+
             {selectedSymbols.length > 0 && (
               <button
                 className="btn-danger-solid"
@@ -781,7 +1013,30 @@ export default function App() {
           </div>
         )}
 
-        {activeTab !== 'race' && (
+        {(activeTab === 'active_gtts' || activeTab === 'gtts') && (
+          <div className="sort-controls" style={{ marginLeft: 'auto' }}>
+            <button
+              className="btn-sync-gtts"
+              onClick={handleSyncGtts}
+              disabled={syncingGtts}
+              title="Deduplicate & sync active GTT orders on Zerodha with DB watchlist"
+            >
+              {syncingGtts ? (
+                <>
+                  <div className="loading-spinner" style={{ width: '13px', height: '13px' }}></div>
+                  <span>Syncing GTTs...</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw size={14} />
+                  <span>Sync GTTs (Clean Duplicates)</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        {activeTab !== 'race' && activeTab !== 'todays_race' && (
           <div className="search-box">
             <Search className="search-icon" size={16} />
             <input
@@ -795,9 +1050,12 @@ export default function App() {
         )}
       </div>
 
-      {activeTab === 'race' ? (
-        /* 🏎️ DAILY STOCK ALERT RACE VIEW */
-        <StockAlertRaceChart />
+      {activeTab === 'todays_race' ? (
+        /* 🏎️ TODAY'S STOCK ALERT RACE VIEW (Current Day Only) */
+        <StockAlertRaceChart todayOnly={true} />
+      ) : activeTab === 'race' ? (
+        /* 🏆 ALL-TIME STOCK ALERT RACE VIEW */
+        <StockAlertRaceChart todayOnly={false} />
       ) : (
         /* Main Database Table Container */
         <div className="table-card">
@@ -996,9 +1254,26 @@ export default function App() {
                   <tr>
                     <td colSpan={10}>
                       <div className="empty-state">
-                        <div className="empty-icon">📊</div>
+                        <div className="empty-icon">{activeTab === 'manual' ? '🌟' : '📊'}</div>
                         <h3>No Stocks Found in {activeTab.toUpperCase()} Table</h3>
-                        <p>Run the Grok pipeline to fetch and evaluate top stocks from Chartink.</p>
+                        <p>
+                          {activeTab === 'manual'
+                            ? 'Add high potency stocks manually to track and set 1% Zerodha GTT alerts.'
+                            : 'Run the Grok pipeline to fetch and evaluate top stocks from Chartink.'}
+                        </p>
+                        {activeTab === 'manual' && (
+                          <button
+                            className="btn-add-manual-stock"
+                            onClick={() => {
+                              setManualError('');
+                              setIsAddModalOpen(true);
+                            }}
+                            style={{ marginTop: '1rem' }}
+                          >
+                            <Sparkles size={16} />
+                            <span>+ Add Stock Manually</span>
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1081,15 +1356,33 @@ export default function App() {
                           {formatDate(item.updated_at)}
                         </td>
 
-                        {/* Actions Column: Delete Individual Stock */}
+                        {/* Actions Column: GTT Alert Reset & Delete */}
                         <td style={{ textAlign: 'center' }}>
-                          <button
-                            className="btn-icon-danger"
-                            onClick={() => handleDeleteSingleStock(item.symbol)}
-                            title={`Delete ${item.symbol} from ${activeTab.toUpperCase()} DB`}
-                          >
-                            <Trash2 size={15} />
-                          </button>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <button
+                              className="btn-action-gtt"
+                              onClick={() => handleResetSingleGtt(item.symbol)}
+                              disabled={resettingGttSymbol === item.symbol}
+                              title={`Set new 1% GTT alert for ${item.symbol} from its current trading price & cancel old GTT`}
+                            >
+                              {resettingGttSymbol === item.symbol ? (
+                                <div className="loading-spinner" style={{ width: '12px', height: '12px' }}></div>
+                              ) : (
+                                <>
+                                  <Zap size={13} />
+                                  <span>GTT</span>
+                                </>
+                              )}
+                            </button>
+
+                            <button
+                              className="btn-icon-danger"
+                              onClick={() => handleDeleteSingleStock(item.symbol)}
+                              title={`Delete ${item.symbol} from ${activeTab.toUpperCase()} DB`}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1100,6 +1393,75 @@ export default function App() {
           )}
         </div>
       </div>
+      )}
+
+      {/* Modal for Adding Manual Stock */}
+      {isAddModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsAddModalOpen(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Add Stock Manually (High Potency)</h3>
+              <button className="modal-close-btn" onClick={() => setIsAddModalOpen(false)}>×</button>
+            </div>
+            <form onSubmit={handleAddManualStock} className="modal-body">
+              <div className="form-group">
+                <label>Stock Symbol (e.g., RELIANCE, TATAMOTORS, INFY):</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Enter Stock Symbol"
+                  value={manualSymbol}
+                  onChange={(e) => {
+                    setManualSymbol(e.target.value.toUpperCase());
+                    setManualError('');
+                  }}
+                  className="modal-input"
+                  autoFocus
+                />
+              </div>
+              <div className="form-group">
+                <label>Potency Reason / Thesis:</label>
+                <textarea
+                  placeholder="Why do you feel this stock has high potency?"
+                  value={manualReason}
+                  onChange={(e) => setManualReason(e.target.value)}
+                  className="modal-textarea"
+                  rows={3}
+                />
+              </div>
+
+              {manualError && (
+                <div className="modal-error-alert">
+                  <strong>⚠️ Cannot Add Stock:</strong> {manualError}
+                </div>
+              )}
+
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn-cancel"
+                  onClick={() => setIsAddModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-submit-manual"
+                  disabled={addingManualStock}
+                >
+                  {addingManualStock ? (
+                    <>
+                      <div className="loading-spinner"></div>
+                      <span>Adding & Setting GTT Alert...</span>
+                    </>
+                  ) : (
+                    <span>Add Stock & Set 1% GTT Alert</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

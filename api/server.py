@@ -364,6 +364,23 @@ def run_gtt_audit_loop():
         time.sleep(1800)
 
 
+def run_derivatives_alert_monitor_loop():
+    """
+    Background daemon loop running every 5 minutes.
+    Fetches live Zerodha options chain data, analyzes PCR, GIFT Nifty basis, VIX, and Strike OI,
+    and automatically triggers Telegram alerts for STRONG BULL / STRONG BEAR setups before major moves.
+    """
+    time.sleep(15)
+    while True:
+        try:
+            from scripts.fetch_derivatives_data import analyze_nse_derivatives, check_and_trigger_oi_pressure_alert
+            data = analyze_nse_derivatives(force_grok=False, force_refresh=True)
+            if data and data.get("zerodha_connected"):
+                check_and_trigger_oi_pressure_alert(data)
+        except Exception as e:
+            print(f"[DERIVATIVES-LOOP] Background options alert loop note: {e}")
+        time.sleep(300)
+
 @app.on_event("startup")
 def startup_event():
     # Start the daily Zerodha connection check loop in a daemon thread
@@ -371,6 +388,9 @@ def startup_event():
     threading.Thread(target=monitor_watchlist, daemon=True).start()
     # Start automatic GTT next alert integrity audit loop on server startup
     threading.Thread(target=run_gtt_audit_loop, daemon=True).start()
+    # Start automated 5-minute derivatives options pressure alert loop
+    threading.Thread(target=run_derivatives_alert_monitor_loop, daemon=True).start()
+    print("[DERIVATIVES-LOOP] Automated 5-minute options pressure alert monitor loop started.")
     # Start Zerodha KiteTicker WebSocket alert engine
     try:
         from scripts.zerodha_websocket_alert_listener import ws_alert_engine
@@ -485,12 +505,17 @@ def get_zerodha_gtt_alerts():
                 "created_at": g.get("created_at"),
                 "expires_at": g.get("expires_at"),
                 "order_type": first_order.get("order_type", "LIMIT"),
-                "transaction_type": first_order.get("transaction_type", "BUY"),
-                "quantity": first_order.get("quantity", 1),
                 "price": first_order.get("price", 0.0)
             })
             
-        return {"status": "success", "gtts": gtt_list, "count": len(gtt_list)}
+        active_count = len([g for g in gtt_list if g.get("status", "").upper() == "ACTIVE"])
+        return {
+            "status": "success",
+            "gtts": gtt_list,
+            "count": active_count,
+            "active_count": active_count,
+            "total_count": len(gtt_list)
+        }
     except Exception as e:
         print(f"[ERROR] Failed to fetch Zerodha GTTs: {e}")
         return {"status": "error", "message": str(e), "gtts": [], "count": 0}
@@ -864,12 +889,66 @@ class PipelineRunRequest(BaseModel):
     api_key: Optional[str] = None
     force: Optional[bool] = False
 
+class AddManualStockRequest(BaseModel):
+    symbol: str
+    reason: Optional[str] = "Manually added high potency stock"
+
+@app.post("/api/manual/add-stock")
+def add_manual_stock_endpoint(req: AddManualStockRequest):
+    """
+    Manually adds a high potency stock to the 'manual' collection, checks duplicates across all tables,
+    calculates recent high, and sets a 1% GTT alert via Zerodha API.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        result = dm.add_manual_stock(req.symbol, req.reason)
+        
+        # Reload WebSocket targets if applicable
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_alert_engine.load_monitored_targets()
+        except Exception:
+            pass
+
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add manual stock: {e}")
+
+@app.delete("/api/manual/clear-all")
+def clear_all_manual_stocks_endpoint():
+    """
+    Deletes all stock records from the 'manual' collection and cancels their active Zerodha GTT alerts.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        deleted_count = dm.clear_all_stock_ratings("manual")
+        
+        # Reload WebSocket targets
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_alert_engine.load_monitored_targets()
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "message": "Successfully deleted all stock records from 'manual' table and cancelled associated Zerodha GTT alerts.",
+            "timeframe": "manual",
+            "deleted_count": deleted_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear manual table: {e}")
+
 @app.get("/api/ratings/{timeframe}")
 def get_stock_ratings(timeframe: str):
-    """Retrieve Grok-evaluated high-conviction stocks and 1% trigger prices for a timeframe ('monthly', 'weekly', 'daily')."""
+    """Retrieve Grok-evaluated high-conviction stocks and 1% trigger prices for a timeframe ('monthly', 'weekly', 'daily', 'manual')."""
     tf_clean = timeframe.strip().lower()
-    if tf_clean not in ("monthly", "weekly", "daily"):
-        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+    if tf_clean not in ("monthly", "weekly", "daily", "manual"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', or 'manual'")
         
     try:
         from data_manager import DataManager
@@ -889,10 +968,10 @@ def get_stock_ratings(timeframe: str):
 
 @app.delete("/api/ratings/{timeframe}")
 def clear_all_timeframe_ratings(timeframe: str):
-    """Deletes all stock records from a specific timeframe table ('monthly', 'weekly', 'daily')."""
+    """Deletes all stock records from a specific timeframe table ('monthly', 'weekly', 'daily', 'manual')."""
     tf_clean = timeframe.strip().lower()
-    if tf_clean not in ("monthly", "weekly", "daily"):
-        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+    if tf_clean not in ("monthly", "weekly", "daily", "manual"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', or 'manual'")
         
     try:
         from data_manager import DataManager
@@ -917,10 +996,10 @@ def clear_all_timeframe_ratings(timeframe: str):
 
 @app.delete("/api/ratings/{timeframe}/{symbol}")
 def delete_single_stock_rating(timeframe: str, symbol: str):
-    """Deletes an individual stock record from a specific timeframe table ('monthly', 'weekly', 'daily')."""
+    """Deletes an individual stock record from a specific timeframe table ('monthly', 'weekly', 'daily', 'manual')."""
     tf_clean = timeframe.strip().lower()
-    if tf_clean not in ("monthly", "weekly", "daily"):
-        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+    if tf_clean not in ("monthly", "weekly", "daily", "manual"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', or 'manual'")
         
     sym_clean = symbol.strip().upper()
     try:
@@ -951,8 +1030,8 @@ class BatchDeleteRequest(BaseModel):
 def delete_batch_stock_ratings(timeframe: str, req: BatchDeleteRequest):
     """Deletes a selected list of stock records from a specific timeframe table and cancels their Zerodha GTT alerts."""
     tf_clean = timeframe.strip().lower()
-    if tf_clean not in ("monthly", "weekly", "daily"):
-        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', or 'daily'")
+    if tf_clean not in ("monthly", "weekly", "daily", "manual"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', or 'manual'")
         
     try:
         from data_manager import DataManager
@@ -976,12 +1055,11 @@ def delete_batch_stock_ratings(timeframe: str, req: BatchDeleteRequest):
         raise HTTPException(status_code=500, detail=f"Failed to batch delete from {tf_clean} table: {e}")
 
 @app.get("/api/race/daily")
-def get_daily_stock_alert_race():
+def get_daily_stock_alert_race(today_only: bool = False):
     """
-    Returns today's Daily Stock Alert Race leaderboard.
-    Aggregates breakout alerts across monthly, weekly, and daily tables,
-    filtered strictly by today's date in IST (Asia/Kolkata timezone).
-    Resets automatically every day at 00:00 IST.
+    Returns the Stock Alert Race leaderboard.
+    Aggregates breakout alerts across monthly, weekly, daily, and manual tables.
+    If today_only=True, strictly filters to stocks updated or alerted TODAY in IST (ignoring past/yesterday's stocks).
     """
     try:
         from data_manager import DataManager
@@ -995,8 +1073,8 @@ def get_daily_stock_alert_race():
         dm = DataManager()
         stocks_map = {}
 
-        # Search monthly, weekly, daily collections for records with alert activity
-        for tf in ["monthly", "weekly", "daily"]:
+        # Search monthly, weekly, daily, manual collections for records with alert activity
+        for tf in ["monthly", "weekly", "daily", "manual"]:
             try:
                 col = dm.db[tf]
                 docs = list(col.find({}))
@@ -1013,23 +1091,36 @@ def get_daily_stock_alert_race():
                     alert_status = doc.get("alert_status") or "LOCAL_ALERT_SET"
                     gtt_id = doc.get("gtt_id")
                     
-                    # Determine date of last alert/update
-                    updated_at = doc.get("alert_updated_at") or doc.get("updated_at")
+                    # Determine date of last actual 1% breakout alert trigger in IST timezone
+                    last_alerted_at = doc.get("last_alerted_at")
                     date_str = ""
-                    if isinstance(updated_at, datetime):
-                        date_str = updated_at.astimezone(ist_tz).strftime("%Y-%m-%d") if updated_at.tzinfo else updated_at.strftime("%Y-%m-%d")
-                    elif isinstance(updated_at, str):
-                        date_str = str(updated_at)[:10]
+                    if isinstance(last_alerted_at, datetime):
+                        if last_alerted_at.tzinfo is None:
+                            last_alerted_ist = last_alerted_at.replace(tzinfo=timezone.utc).astimezone(ist_tz)
+                        else:
+                            last_alerted_ist = last_alerted_at.astimezone(ist_tz)
+                        date_str = last_alerted_ist.strftime("%Y-%m-%d")
+                    elif isinstance(last_alerted_at, str):
+                        date_str = str(last_alerted_at)[:10]
                     
-                    # Daily Reset Filter: Only count if record has alert activity or was updated TODAY in IST
                     is_today = (date_str == today_date_str)
-                    daily_alerts = alert_cnt if is_today else (1 if (is_today and alert_cnt == 0) else (alert_cnt if alert_cnt > 0 else 0))
+                    has_triggered = (alert_cnt > 0) or ("TRIGGER" in str(alert_status).upper())
+
+                    # STRICT FILTERING for Today's Race:
+                    # ONLY include stocks whose 1% breakout alert ACTUALLY TRIGGERED TODAY in IST (is_today is True).
+                    # Discard all remaining stocks (stocks triggered on past days & un-triggered candidates).
+                    if today_only:
+                        if not (is_today and has_triggered):
+                            continue
                     
-                    if sym not in stocks_map or daily_alerts > stocks_map[sym]["alert_count"]:
+                    today_alerts = int(doc.get("today_alert_count") or (alert_cnt if is_today else 0))
+                    active_alerts_count = today_alerts if today_only else alert_cnt
+
+                    if sym not in stocks_map or active_alerts_count > stocks_map[sym]["alert_count"]:
                         stocks_map[sym] = {
                             "symbol": sym,
                             "timeframe": tf.upper(),
-                            "alert_count": daily_alerts,
+                            "alert_count": active_alerts_count,
                             "total_alerts": alert_cnt,
                             "recent_high": recent_high,
                             "alert_trigger_price": trigger_price,
@@ -1037,7 +1128,7 @@ def get_daily_stock_alert_race():
                             "reason": reason,
                             "alert_status": alert_status,
                             "gtt_id": gtt_id,
-                            "last_updated": str(updated_at) if updated_at else now_ist.isoformat(),
+                            "last_updated": str(last_alerted_at) if last_alerted_at else now_ist.isoformat(),
                             "is_today": is_today
                         }
             except Exception as tf_err:
@@ -1055,12 +1146,18 @@ def get_daily_stock_alert_race():
         return {
             "status": "success",
             "date": today_date_str,
+            "today_only": today_only,
             "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
             "count": len(race_items),
             "leaderboard": race_items
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate daily race data: {e}")
+
+@app.get("/api/race/todays")
+def get_todays_stock_alert_race():
+    """Returns Today's Stock Alert Race leaderboard strictly considering current day stocks."""
+    return get_daily_stock_alert_race(today_only=True)
 
 @app.post("/api/pipeline/run")
 def trigger_chartink_grok_pipeline(req: PipelineRunRequest, background_tasks: BackgroundTasks):
@@ -1094,7 +1191,75 @@ def audit_and_fix_next_gtt_alerts():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run GTT next alert integrity audit: {e}")
 
+@app.get("/api/derivatives/analysis")
+def get_derivatives_analysis(force_grok: bool = False):
+    """
+    Fetches live Nifty Spot, GIFT Nifty, PCR, India VIX, Max Call/Put strikes from Zerodha API.
+    Only queries Grok AI for directional bias and news when force_grok=True is explicitly set.
+    """
+    try:
+        from scripts.fetch_derivatives_data import analyze_nse_derivatives
+        res = analyze_nse_derivatives(force_grok=force_grok)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to perform derivatives analysis: {e}")
+
+@app.post("/api/derivatives/test-telegram-alert")
+def test_telegram_derivatives_alert():
+    """
+    Triggers an options pressure buildup alert (Put/Call side) to Telegram bot.
+    """
+    try:
+        from scripts.fetch_derivatives_data import send_telegram_derivatives_alert
+        res = send_telegram_derivatives_alert(force_send=True)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to dispatch Telegram alert: {e}")
+
+@app.post("/api/stocks/{symbol}/reset-gtt")
+def reset_gtt_for_stock(symbol: str, timeframe: Optional[str] = None):
+    """
+    Cancels any previous GTT on Zerodha for symbol and places a new 1% GTT alert
+    from its current live trading price (LTP). Applicable to monthly, weekly, daily, manual.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        res = dm.reset_stock_1pct_gtt(symbol=symbol, timeframe=timeframe)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset 1% GTT for '{symbol}': {e}")
+
+@app.post("/api/stocks/reset-all-gtts")
+def reset_all_gtts_endpoint(timeframe: str = "monthly"):
+    """
+    Resets 1% GTT breakout alerts for ALL stocks in a given timeframe collection (monthly, weekly, daily, manual)
+    from their current trading prices, cancelling previous GTTs.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        res = dm.reset_all_timeframe_gtts(timeframe=timeframe)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset GTT alerts for timeframe '{timeframe}': {e}")
+
+@app.post("/api/zerodha/sync-gtts")
+def sync_zerodha_gtts_endpoint():
+    """
+    Synchronizes Zerodha GTTs with DB watchlist: deletes duplicate GTT orders for tracked stocks
+    and removes orphaned GTT orders from Zerodha account.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        res = dm.sync_and_clean_zerodha_gtts()
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to sync Zerodha GTTs: {e}")
+
 if __name__ == "__main__":
+
     import uvicorn
     uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)
 

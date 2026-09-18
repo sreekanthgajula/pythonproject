@@ -267,6 +267,21 @@ class ZerodhaWebSocketAlertEngine:
                 tf = meta.get("timeframe", "monthly").strip().lower()
                 col = self.dm.db[tf]
                 ist_tz = timezone(timedelta(hours=5, minutes=30))
+                now_ist = datetime.now(ist_tz)
+                today_str = now_ist.strftime("%Y-%m-%d")
+                
+                doc = col.find_one({"symbol": symbol.upper()})
+                last_alerted = doc.get("last_alerted_at") if doc else None
+                was_today = False
+                if isinstance(last_alerted, datetime):
+                    if last_alerted.tzinfo is None:
+                        last_alerted_ist = last_alerted.replace(tzinfo=timezone.utc).astimezone(ist_tz)
+                    else:
+                        last_alerted_ist = last_alerted.astimezone(ist_tz)
+                    was_today = (last_alerted_ist.strftime("%Y-%m-%d") == today_str)
+
+                today_count = (doc.get("today_alert_count", 0) + 1) if (was_today and doc) else 1
+
                 col.update_one(
                     {"symbol": symbol.upper()},
                     {
@@ -274,11 +289,12 @@ class ZerodhaWebSocketAlertEngine:
                         "$set": {
                             "recent_high": new_recent_high,
                             "alert_trigger_price": new_trigger_price,
-                            "last_alerted_at": datetime.now(ist_tz).replace(tzinfo=None)
+                            "last_alerted_at": now_ist.replace(tzinfo=None),
+                            "today_alert_count": today_count
                         }
                     }
                 )
-                logger.info(f"📈 [TRAILING 1% LADDER] {symbol} ({tf}): Alerted at ₹{current_price:.2f}. Advanced Next Trigger to ₹{new_trigger_price:.2f} (+1%). Incremented alert_count.")
+                logger.info(f"📈 [TRAILING 1% LADDER] {symbol} ({tf}): Alerted at ₹{current_price:.2f}. Advanced Next Trigger to ₹{new_trigger_price:.2f} (+1%). Today's Alerts: {today_count}, Total: Incremented.")
             except Exception as db_inc_err:
                 logger.error(f"Failed to update trailing alert data for {symbol}: {db_inc_err}")
 

@@ -15,7 +15,7 @@ import {
 
 const API_BASE_URL = '/api';
 
-export default function StockAlertRaceChart() {
+export default function StockAlertRaceChart({ todayOnly = false }) {
   const [raceData, setRaceData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [todayDate, setTodayDate] = useState('');
@@ -25,7 +25,8 @@ export default function StockAlertRaceChart() {
   const fetchRaceLeaderboard = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/race/daily`);
+      const endpoint = todayOnly ? `${API_BASE_URL}/race/daily?today_only=true` : `${API_BASE_URL}/race/daily?today_only=false`;
+      const res = await fetch(endpoint);
       if (res.ok) {
         const json = await res.json();
         setRaceData(json.leaderboard || []);
@@ -33,7 +34,7 @@ export default function StockAlertRaceChart() {
         setLastUpdated(json.timestamp_ist || new Date().toLocaleTimeString());
       }
     } catch (err) {
-      console.error('Error fetching daily race leaderboard:', err);
+      console.error('Error fetching race leaderboard:', err);
     } finally {
       setLoading(false);
     }
@@ -43,7 +44,7 @@ export default function StockAlertRaceChart() {
     fetchRaceLeaderboard();
     const interval = setInterval(fetchRaceLeaderboard, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [todayOnly]);
 
   const filteredRace = raceData.filter(item => {
     const sym = item.symbol || '';
@@ -84,14 +85,18 @@ export default function StockAlertRaceChart() {
               <Trophy size={28} color="#f59e0b" />
             </div>
             <div>
-              <h2>🏎️ Daily Stock Alert Grand Prix</h2>
-              <p>Live Race Among Stocks for Maximum 1% Breakout Alerts Today</p>
+              <h2>{todayOnly ? "🏎️ Today's Stock Alert Grand Prix" : "🏆 All-Time Stock Alert Grand Prix"}</h2>
+              <p>
+                {todayOnly
+                  ? "Live Race for 1% Breakout Alerts Triggered Today (Past Days & Un-triggered Stocks Discarded)"
+                  : "Overall Standings Across All Tracked Candidates & Historical Triggers"}
+              </p>
             </div>
           </div>
           <div className="race-actions">
             <div className="daily-reset-badge" title="Leaderboard automatically resets every day at midnight (00:00 IST)">
               <Clock size={14} color="#38bdf8" />
-              <span>Resets Daily at 00:00 IST [{todayDate || 'Today'}]</span>
+              <span>{todayOnly ? `Current Day Triggers [${todayDate || 'Today'}]` : `Resets Daily at 00:00 IST [${todayDate || 'Today'}]`}</span>
             </div>
             <button
               className="btn-icon-secondary"
@@ -224,7 +229,7 @@ export default function StockAlertRaceChart() {
       {/* Horizontal Bar Chart Race Standings List */}
       <div className="table-card race-list-card">
         <div className="race-list-header">
-          <h3>🏎️ Full Daily Alert Race Standings</h3>
+          <h3>{todayOnly ? "🏎️ Today's Breakout Alert Race Standings" : "🏆 All-Time Alert Race Standings"}</h3>
           <span className="race-count-tag">{filteredRace.length} Contenders</span>
         </div>
 
@@ -236,8 +241,12 @@ export default function StockAlertRaceChart() {
         ) : filteredRace.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon">🏎️</div>
-            <h3>No Alert Triggers Recorded Today Yet</h3>
-            <p>Alert breakout triggers will appear here in real-time as they race to the top.</p>
+            <h3>{todayOnly ? "No 1% Breakout Alerts Triggered Today Yet" : "No Candidate Stocks Found"}</h3>
+            <p>
+              {todayOnly
+                ? "Stocks triggered on previous days and un-triggered candidates are discarded from Today's Race."
+                : "Candidate stocks across all timeframes will appear here."}
+            </p>
           </div>
         ) : (
           <div className="race-bar-list">

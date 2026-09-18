@@ -153,6 +153,23 @@ def set_zerodha_1pct_breakout_alert(symbol: str, timeframe: str = "monthly", ove
     # Attempt Zerodha GTT order placement with primary quantity, with fallbacks (500, 100, 50) if placement fails
     if kite:
         trading_symbol = clean_sym.replace(".NS", "").replace("-EQ", "").strip()
+
+        # Cancel any previous GTT order for this symbol before placing new GTT
+        try:
+            from data_manager import DataManager
+            _dm = DataManager()
+            for _tf in ["monthly", "weekly", "daily", "manual"]:
+                prev_doc = _dm.db[_tf].find_one({"symbol": clean_sym})
+                if prev_doc and prev_doc.get("gtt_id"):
+                    prev_gtt_id = prev_doc.get("gtt_id")
+                    try:
+                        kite.delete_gtt(int(prev_gtt_id))
+                        logger.info(f"[ZERODHA GTT] Cancelled previous GTT #{prev_gtt_id} for {clean_sym} prior to new placement.")
+                    except Exception as del_err:
+                        logger.warning(f"Notice deleting previous GTT #{prev_gtt_id} for {clean_sym}: {del_err}")
+        except Exception as pre_del_err:
+            logger.debug(f"Pre-cancellation check for {clean_sym}: {pre_del_err}")
+
         placed = False
         last_error = None
 
@@ -208,7 +225,7 @@ def set_zerodha_1pct_breakout_alert(symbol: str, timeframe: str = "monthly", ove
             "alert_trigger_price": trigger_price,
             "alert_status": gtt_status,
             "gtt_quantity": gtt_quantity,
-            "alert_updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
+            "gtt_updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
         }
         if gtt_id:
             set_dict["gtt_id"] = gtt_id

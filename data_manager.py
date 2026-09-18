@@ -194,7 +194,7 @@ class DataManager:
         Returns:
             bool: True if saved successfully, False otherwise.
         """
-        valid_tables = {"monthly", "weekly", "daily"}
+        valid_tables = {"monthly", "weekly", "daily", "manual"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -228,7 +228,7 @@ class DataManager:
         Returns:
             list[dict]: List of rating records.
         """
-        valid_tables = {"monthly", "weekly", "daily"}
+        valid_tables = {"monthly", "weekly", "daily", "manual"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -243,7 +243,7 @@ class DataManager:
 
     def delete_stock_rating(self, table_name: str, symbol: str) -> bool:
         """Deletes a single stock document from the specified timeframe table and cancels any associated Zerodha GTT alert."""
-        valid_tables = {"monthly", "weekly", "daily"}
+        valid_tables = {"monthly", "weekly", "daily", "manual"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -273,7 +273,7 @@ class DataManager:
 
     def clear_all_stock_ratings(self, table_name: str) -> int:
         """Deletes all stock documents from the specified timeframe table and cancels their active Zerodha GTT alerts."""
-        valid_tables = {"monthly", "weekly", "daily"}
+        valid_tables = {"monthly", "weekly", "daily", "manual"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -308,7 +308,7 @@ class DataManager:
 
     def delete_batch_stock_ratings(self, table_name: str, symbols: list) -> int:
         """Deletes a list of stock symbols from the specified timeframe table and cancels any active Zerodha GTT alerts for them."""
-        valid_tables = {"monthly", "weekly", "daily"}
+        valid_tables = {"monthly", "weekly", "daily", "manual"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -346,6 +346,303 @@ class DataManager:
 
         logger.info(f"Batch deleted {deleted_total} symbols from '{clean_table}'")
         return deleted_total
+
+
+
+    def add_manual_stock(self, symbol: str, reason: str = "Manually added high-potency candidate") -> dict:
+        """
+        Adds a stock symbol manually to the 'manual' collection.
+        Checks for duplicates (blocks addition if symbol already exists).
+        Automatically places a 1% Zerodha GTT breakout alert.
+        """
+        clean_sym = symbol.strip().upper().replace(".NS", "").replace("-EQ", "")
+        if not clean_sym:
+            raise ValueError("Stock symbol cannot be empty.")
+
+        col = self.db["manual"]
+        # Duplicate check across all tables
+        for tbl in ["monthly", "weekly", "daily", "manual"]:
+            existing = self.db[tbl].find_one({"$or": [{"symbol": clean_sym}, {"symbol": f"{clean_sym}.NS"}]})
+            if existing:
+                raise ValueError(f"Stock '{clean_sym}' already exists in '{tbl}' table! Duplicate additions are not allowed.")
+
+        # Place 1% Zerodha GTT breakout alert & upsert document into 'manual' collection
+        from scripts.zerodha_alert_manager import set_zerodha_1pct_breakout_alert
+        gtt_res = set_zerodha_1pct_breakout_alert(
+            symbol=clean_sym,
+            timeframe="manual"
+        )
+
+        # Update record with manual metadata & reason
+        col.update_one(
+            {"symbol": clean_sym},
+            {"$set": {
+                "symbol": clean_sym,
+                "rating": 10.0,
+                "reason": reason,
+                "source": "manual",
+                "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
+            }},
+            upsert=True
+        )
+
+        doc = col.find_one({"symbol": clean_sym}, {"_id": 0})
+        logger.info(f"[MANUAL STOCK ADDED] Symbol='{clean_sym}', Trigger={doc.get('alert_trigger_price')}, GTT_ID={doc.get('gtt_id')}")
+
+        return {
+            "status": "success",
+            "is_duplicate": False,
+            "message": f"Successfully added '{clean_sym}' to Manual watchlist & set 1% Zerodha GTT alert!",
+            "symbol": clean_sym,
+            "stock": doc,
+            "gtt_details": gtt_res
+        }
+
+    def reset_stock_1pct_gtt(self, symbol: str, timeframe: str = None) -> dict:
+        """
+        Fetches current live trading price for symbol, cancels any previous Zerodha GTT,
+        and sets a new 1% Zerodha GTT breakout alert from the current trading price.
+        Applicable to monthly, weekly, daily, and manual stocks.
+        """
+        clean_sym = symbol.strip().upper().replace(".NS", "").replace("-EQ", "")
+        if not clean_sym:
+            raise ValueError("Symbol cannot be empty.")
+
+        target_tf = timeframe.lower() if timeframe else None
+        doc = None
+        if not target_tf:
+            for tf in ["monthly", "weekly", "daily", "manual"]:
+                doc = self.db[tf].find_one({"symbol": clean_sym})
+                if doc:
+                    target_tf = tf
+                    break
+        else:
+            doc = self.db[target_tf].find_one({"symbol": clean_sym})
+
+        if not target_tf:
+            target_tf = "monthly"
+
+        # Fetch current live trading price (LTP)
+        current_ltp = 0.0
+        try:
+            from scripts.zerodha_alert_manager import get_kite_client
+            kite = get_kite_client()
+            if kite:
+                quotes = kite.quote([f"NSE:{clean_sym}", f"BSE:{clean_sym}"])
+                for k, q in quotes.items():
+                    if q.get("last_price", 0) > 0:
+                        current_ltp = float(q["last_price"])
+                        break
+        except Exception as q_err:
+            logger.warning(f"Could not fetch live LTP from Zerodha for {clean_sym}: {q_err}")
+
+        # Fallback if Zerodha live quote unavailable
+        if current_ltp <= 0 and doc:
+            current_ltp = float(doc.get("recent_high") or 0.0)
+            if current_ltp <= 0 and doc.get("alert_trigger_price"):
+                current_ltp = float(doc["alert_trigger_price"]) / 1.01
+
+        if current_ltp <= 0:
+            import yfinance as yf
+            try:
+                t = yf.Ticker(f"{clean_sym}.NS")
+                fi = t.fast_info
+                current_ltp = float(fi.get("lastPrice") or 0.0)
+            except Exception:
+                pass
+
+        if current_ltp <= 0:
+            raise ValueError(f"Could not determine current trading price for '{clean_sym}'.")
+
+        # Place new 1% Zerodha GTT alert from current_ltp (set_zerodha_1pct_breakout_alert automatically cancels previous GTT)
+        from scripts.zerodha_alert_manager import set_zerodha_1pct_breakout_alert
+        res = set_zerodha_1pct_breakout_alert(
+            symbol=clean_sym,
+            timeframe=target_tf,
+            override_recent_high=current_ltp
+        )
+
+        return {
+            "status": "success",
+            "message": f"Successfully reset 1% GTT alert for '{clean_sym}' from current trading price ₹{current_ltp:.2f}!",
+            "symbol": clean_sym,
+            "timeframe": target_tf,
+            "current_trading_price": current_ltp,
+            "recent_high": res.get("recent_high", current_ltp),
+            "alert_trigger_price": res.get("alert_trigger_price"),
+            "gtt_id": res.get("gtt_id"),
+            "gtt_status": res.get("status") or res.get("gtt_status")
+        }
+
+    def reset_all_timeframe_gtts(self, timeframe: str) -> dict:
+        """
+        Resets 1% GTT alerts for ALL stocks in a given timeframe (monthly, weekly, daily, manual)
+        from their current trading prices, cancelling previous GTTs.
+        """
+        tf_clean = timeframe.strip().lower()
+        if tf_clean not in ["monthly", "weekly", "daily", "manual"]:
+            raise ValueError(f"Invalid timeframe '{timeframe}'.")
+
+        col = self.db[tf_clean]
+        docs = list(col.find({}))
+        if not docs:
+            return {"status": "success", "reset_count": 0, "message": f"No stocks found in {tf_clean} table."}
+
+        results = []
+        for doc in docs:
+            sym = doc.get("symbol")
+            if not sym:
+                continue
+            try:
+                r = self.reset_stock_1pct_gtt(sym, timeframe=tf_clean)
+                results.append(r)
+            except Exception as err:
+                logger.error(f"Error resetting GTT for {sym}: {err}")
+
+        return {
+            "status": "success",
+            "timeframe": tf_clean,
+            "reset_count": len(results),
+            "details": results,
+            "message": f"Successfully set new 1% GTT alerts for {len(results)} stocks in {tf_clean} table from current trading prices (previous GTTs removed)!"
+        }
+
+    def sync_and_clean_zerodha_gtts(self) -> dict:
+        """
+        Deletes ALL existing GTT orders on Zerodha and creates new +1% GTT breakout orders
+        based on live current trading prices for all tracked stocks in monthly, weekly, daily,
+        and manual watchlists.
+        """
+        try:
+            from scripts.zerodha_alert_manager import get_kite_client
+            kite = get_kite_client()
+        except Exception as ke:
+            raise ValueError(f"Zerodha Kite client unavailable: {ke}")
+
+        if not kite:
+            raise ValueError("Zerodha Kite client is not connected.")
+
+        # 1. Fetch all existing GTT orders on Zerodha
+        gtts = kite.get_gtts()
+        initial_gtt_count = len(gtts)
+
+        # 2. Delete ALL existing active GTT orders on Zerodha
+        deleted_gtt_count = 0
+        deleted_details = []
+        for g in gtts:
+            g_id = g.get("id")
+            g_status = str(g.get("status") or "").lower()
+            if g_id and g_status in ["active", ""]:
+                try:
+                    kite.delete_gtt(int(g_id))
+                    deleted_gtt_count += 1
+                    cond = g.get("condition") or {}
+                    ts = cond.get("tradingsymbol") or "UNKNOWN"
+                    deleted_details.append({"symbol": ts, "gtt_id": g_id})
+                    logger.info(f"[SYNC GTTS] Deleted existing GTT #{g_id} for {ts}")
+                except Exception as err:
+                    logger.warning(f"Error deleting GTT #{g_id}: {err}")
+
+        # 3. Collect all tracked stocks from database
+        tracked_stocks = []
+        seen_symbols = set()
+        for tf in ['monthly', 'weekly', 'daily', 'manual']:
+            for doc in self.db[tf].find({}):
+                sym = doc.get('symbol', '').strip().upper().replace('.NS', '').replace('-EQ', '')
+                if sym and sym not in seen_symbols:
+                    seen_symbols.add(sym)
+                    tracked_stocks.append((sym, tf))
+
+        if not tracked_stocks:
+            return {
+                "status": "success",
+                "deleted_gtt_count": deleted_gtt_count,
+                "created_gtt_count": 0,
+                "total_tracked_stocks": 0,
+                "message": f"Sync Complete! Deleted {deleted_gtt_count} existing GTTs. No tracked stocks found in database to set new GTTs."
+            }
+
+        # 4. Batch fetch current live trading prices (LTP) from Zerodha
+        nse_symbols = [f"NSE:{sym}" for sym, _ in tracked_stocks]
+        ltp_map = {}
+        if kite and nse_symbols:
+            try:
+                chunk_size = 200
+                for i in range(0, len(nse_symbols), chunk_size):
+                    chunk = nse_symbols[i:i + chunk_size]
+                    quotes = kite.quote(chunk)
+                    for key, q_data in quotes.items():
+                        s = key.replace("NSE:", "").replace("BSE:", "")
+                        lp = float(q_data.get("last_price") or 0.0)
+                        if lp > 0:
+                            ltp_map[s] = lp
+            except Exception as q_err:
+                logger.warning(f"[SYNC GTTS] Batch quote fetch notice: {q_err}")
+
+        # 5. Create new +1% GTT breakout alert for each tracked stock from live price
+        created_gtt_count = 0
+        created_details = []
+        failed_stocks = []
+
+        from scripts.zerodha_alert_manager import set_zerodha_1pct_breakout_alert
+
+        for sym, tf in tracked_stocks:
+            current_ltp = ltp_map.get(sym, 0.0)
+            try:
+                if current_ltp > 0:
+                    res = set_zerodha_1pct_breakout_alert(
+                        symbol=sym,
+                        timeframe=tf,
+                        override_recent_high=current_ltp
+                    )
+                else:
+                    res = self.reset_stock_1pct_gtt(sym, timeframe=tf)
+
+                if res.get("gtt_id"):
+                    created_gtt_count += 1
+                    created_details.append({
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "gtt_id": res.get("gtt_id"),
+                        "ltp": current_ltp or res.get("current_trading_price"),
+                        "alert_trigger_price": res.get("alert_trigger_price")
+                    })
+                else:
+                    created_details.append({
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "status": res.get("status"),
+                        "ltp": current_ltp or res.get("current_trading_price")
+                    })
+            except Exception as err:
+                logger.error(f"[SYNC GTTS] Error placing new GTT for {sym}: {err}")
+                failed_stocks.append({"symbol": sym, "error": str(err)})
+
+        # 6. Fetch final count of active GTTs on Zerodha
+        try:
+            final_gtts = kite.get_gtts()
+            final_active_count = len([g for g in final_gtts if str(g.get("status") or "").lower() == "active"])
+        except Exception:
+            final_active_count = created_gtt_count
+
+        msg = (
+            f"Sync Complete! Deleted {deleted_gtt_count} existing GTTs and created "
+            f"{created_gtt_count} new 1% GTT breakout alerts based on current trading prices "
+            f"(+1% above LTP) for {len(tracked_stocks)} tracked stocks. "
+            f"Total Active GTTs on Zerodha: {final_active_count}."
+        )
+
+        return {
+            "status": "success",
+            "initial_gtt_count": initial_gtt_count,
+            "deleted_gtt_count": deleted_gtt_count,
+            "created_gtt_count": created_gtt_count,
+            "total_tracked_stocks": len(tracked_stocks),
+            "final_active_gtt_count": final_active_count,
+            "failed_stocks": failed_stocks,
+            "created_details": created_details,
+            "message": msg
+        }
 
 
 
