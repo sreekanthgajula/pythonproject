@@ -261,6 +261,16 @@ export default function App() {
     }
 
     try {
+      const pastWeekRaceRes = await fetch(`${API_BASE_URL}/race/daily?past_week_only=true`);
+      if (pastWeekRaceRes.ok) {
+        const json = await pastWeekRaceRes.json();
+        setTabCounts(prev => ({ ...prev, past_week_race: json.count || 0 }));
+      }
+    } catch (err) {
+      console.error('Error fetching past_week_race tab count:', err);
+    }
+
+    try {
       const raceRes = await fetch(`${API_BASE_URL}/race/daily?today_only=false`);
       if (raceRes.ok) {
         const json = await raceRes.json();
@@ -905,31 +915,20 @@ export default function App() {
             <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.active_gtts || 0}</span>
           </button>
 
-          {/* 🏎️ TAB 5: TODAY'S STOCK ALERT RACE (Current Day Only) */}
+          {/* 🏎️ TAB 5: STOCK ALERT RACE (Features Today's Race / Past Week Gainers / All-Time Mode Switcher) */}
           <button
-            className={`tab-btn ${activeTab === 'todays_race' ? 'active' : ''}`}
+            className={`tab-btn ${activeTab === 'race' || activeTab === 'todays_race' || activeTab === 'past_week_race' ? 'active' : ''}`}
             onClick={() => setActiveTab('todays_race')}
             style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
           >
-            <Trophy size={16} color="#38bdf8" />
-            <span>🏎️ Today's Race</span>
-            <span className="tab-badge" style={{ background: '#38bdf8', color: '#fff' }}>{tabCounts.todays_race || 0}</span>
-          </button>
-
-          {/* 🏆 TAB 6: ALL-TIME STOCK ALERT RACE */}
-          <button
-            className={`tab-btn ${activeTab === 'race' ? 'active' : ''}`}
-            onClick={() => setActiveTab('race')}
-            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
-          >
             <Trophy size={16} color="#f59e0b" />
-            <span>🏆 All-Time Race</span>
-            <span className="tab-badge" style={{ background: '#f59e0b', color: '#fff' }}>{tabCounts.race || 0}</span>
+            <span>🏎️ Stock Alert Race</span>
+            <span className="tab-badge" style={{ background: '#f59e0b', color: '#fff' }}>{tabCounts.todays_race || tabCounts.race || 0}</span>
           </button>
         </nav>
 
         {/* Quick Sorting Pills & Delete All Button (Hidden on Active GTTS & Race tabs) */}
-        {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && (
+        {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && (
           <div className="sort-controls">
             {activeTab === 'manual' && (
               <button
@@ -1036,7 +1035,7 @@ export default function App() {
           </div>
         )}
 
-        {activeTab !== 'race' && activeTab !== 'todays_race' && (
+        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && (
           <div className="search-box">
             <Search className="search-icon" size={16} />
             <input
@@ -1052,10 +1051,13 @@ export default function App() {
 
       {activeTab === 'todays_race' ? (
         /* 🏎️ TODAY'S STOCK ALERT RACE VIEW (Current Day Only) */
-        <StockAlertRaceChart todayOnly={true} />
+        <StockAlertRaceChart todayOnly={true} pastWeekOnly={false} />
+      ) : activeTab === 'past_week_race' ? (
+        /* 📈 PAST WEEK GAINERS STOCK ALERT RACE VIEW */
+        <StockAlertRaceChart todayOnly={false} pastWeekOnly={true} />
       ) : activeTab === 'race' ? (
         /* 🏆 ALL-TIME STOCK ALERT RACE VIEW */
-        <StockAlertRaceChart todayOnly={false} />
+        <StockAlertRaceChart todayOnly={false} pastWeekOnly={false} />
       ) : (
         /* Main Database Table Container */
         <div className="table-card">

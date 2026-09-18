@@ -1055,11 +1055,12 @@ def delete_batch_stock_ratings(timeframe: str, req: BatchDeleteRequest):
         raise HTTPException(status_code=500, detail=f"Failed to batch delete from {tf_clean} table: {e}")
 
 @app.get("/api/race/daily")
-def get_daily_stock_alert_race(today_only: bool = False):
+def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = False):
     """
     Returns the Stock Alert Race leaderboard.
     Aggregates breakout alerts across monthly, weekly, daily, and manual tables.
-    If today_only=True, strictly filters to stocks updated or alerted TODAY in IST (ignoring past/yesterday's stocks).
+    - If today_only=True: strictly filters to stocks updated or alerted TODAY in IST.
+    - If past_week_only=True: strictly filters to stocks whose market price INCREASED (>0%) over the past week (past 7 days).
     """
     try:
         from data_manager import DataManager
@@ -1079,7 +1080,7 @@ def get_daily_stock_alert_race(today_only: bool = False):
                 col = dm.db[tf]
                 docs = list(col.find({}))
                 for doc in docs:
-                    sym = (doc.get("symbol") or "").upper().replace(".NS", "")
+                    sym = (doc.get("symbol") or "").upper().replace(".NS", "").replace("-EQ", "")
                     if not sym:
                         continue
                     
@@ -1107,8 +1108,6 @@ def get_daily_stock_alert_race(today_only: bool = False):
                     has_triggered = (alert_cnt > 0) or ("TRIGGER" in str(alert_status).upper())
 
                     # STRICT FILTERING for Today's Race:
-                    # ONLY include stocks whose 1% breakout alert ACTUALLY TRIGGERED TODAY in IST (is_today is True).
-                    # Discard all remaining stocks (stocks triggered on past days & un-triggered candidates).
                     if today_only:
                         if not (is_today and has_triggered):
                             continue
@@ -1134,22 +1133,60 @@ def get_daily_stock_alert_race(today_only: bool = False):
             except Exception as tf_err:
                 print(f"[RACE API] Error fetching {tf} table: {tf_err}")
 
-        # Filter to stocks with alert_count > 0 or tracked today, and sort by alert_count descending
-        race_items = list(stocks_map.values())
-        # Sort by alert_count desc, then rating desc
-        race_items.sort(key=lambda x: (x["alert_count"], x["rating"], x["recent_high"]), reverse=True)
+        # Compute 1-week percentage price change for stocks
+        weekly_returns = {}
+        try:
+            import yfinance as yf
+            all_syms = [s + ".NS" for s in stocks_map.keys()]
+            if all_syms:
+                df = yf.download(all_syms, period="10d", progress=False)
+                close_df = df["Close"] if (hasattr(df, "__getitem__") and "Close" in df) else df
+                if hasattr(close_df, "columns"):
+                    close_df = close_df.dropna(how="all").ffill().bfill()
+                    for sym in stocks_map.keys():
+                        col = sym + ".NS"
+                        if col in close_df.columns:
+                            s_series = close_df[col].dropna()
+                            if len(s_series) >= 2:
+                                p_old = float(s_series.iloc[0])
+                                p_new = float(s_series.iloc[-1])
+                                if p_old > 0:
+                                    pct = round(((p_new - p_old) / p_old) * 100.0, 2)
+                                    weekly_returns[sym] = pct
+        except Exception as yf_err:
+            print(f"[RACE API] Weekly returns calculation notice: {yf_err}")
+
+        filtered_items = []
+        for sym, item in stocks_map.items():
+            weekly_gain = weekly_returns.get(sym, 0.0)
+            item["weekly_change_pct"] = weekly_gain
+
+            if past_week_only:
+                # STRICT FILTERING for Past Week Gainers Race:
+                # ONLY include stocks whose market price INCREASED (>0%) over the past week.
+                if weekly_gain <= 0:
+                    continue
+
+            filtered_items.append(item)
+
+        # Sort: if past_week_only, sort by weekly_change_pct desc, then alert_count desc
+        if past_week_only:
+            filtered_items.sort(key=lambda x: (x.get("weekly_change_pct", 0), x["alert_count"], x["rating"]), reverse=True)
+        else:
+            filtered_items.sort(key=lambda x: (x["alert_count"], x["rating"], x["recent_high"]), reverse=True)
 
         # Assign race ranks
-        for idx, item in enumerate(race_items, start=1):
+        for idx, item in enumerate(filtered_items, start=1):
             item["rank"] = idx
 
         return {
             "status": "success",
             "date": today_date_str,
             "today_only": today_only,
+            "past_week_only": past_week_only,
             "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
-            "count": len(race_items),
-            "leaderboard": race_items
+            "count": len(filtered_items),
+            "leaderboard": filtered_items
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate daily race data: {e}")
@@ -1158,6 +1195,11 @@ def get_daily_stock_alert_race(today_only: bool = False):
 def get_todays_stock_alert_race():
     """Returns Today's Stock Alert Race leaderboard strictly considering current day stocks."""
     return get_daily_stock_alert_race(today_only=True)
+
+@app.get("/api/race/past-week")
+def get_past_week_stock_alert_race():
+    """Returns Stock Alert Race leaderboard strictly considering stocks that INCREASED over the past week."""
+    return get_daily_stock_alert_race(past_week_only=True)
 
 @app.post("/api/pipeline/run")
 def trigger_chartink_grok_pipeline(req: PipelineRunRequest, background_tasks: BackgroundTasks):
