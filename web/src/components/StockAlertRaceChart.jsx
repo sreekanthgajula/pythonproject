@@ -125,7 +125,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                 {activeMode === 'today'
                   ? "🏎️ Today's Stock Alert Grand Prix"
                   : activeMode === 'past_week'
-                  ? "📈 Past Week Gainers Stock Alert Grand Prix"
+                  ? "📈 Week's Stock Alert Grand Prix"
                   : "🏆 All-Time Stock Alert Grand Prix"}
               </h2>
               <p>
@@ -145,7 +145,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                 onClick={() => setActiveMode('today')}
               >
                 <Clock size={13} />
-                <span>Today's Race</span>
+                <span>Today's</span>
               </button>
 
               <button
@@ -153,7 +153,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                 onClick={() => setActiveMode('past_week')}
               >
                 <TrendingUp size={13} />
-                <span>Past Week Gainers</span>
+                <span>Week's</span>
               </button>
 
               <button
@@ -315,7 +315,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
             {activeMode === 'today'
               ? "🏎️ Today's Breakout Alert Race Standings"
               : activeMode === 'past_week'
-              ? "📈 Past Week Gainers Race Standings (>0% 7-Day Growth)"
+              ? "📈 Week's Breakout Alert Race Standings (>0% 7-Day Growth)"
               : "🏆 All-Time Alert Race Standings"}
           </h3>
           <span className="race-count-tag">{filteredRace.length} Contenders</span>
