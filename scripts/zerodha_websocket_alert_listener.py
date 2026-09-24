@@ -70,23 +70,29 @@ class ZerodhaWebSocketAlertEngine:
         if not self.dm:
             return target_map
 
-        timeframes = ["monthly", "weekly", "daily"]
+        timeframes = ["darvas", "monthly", "weekly", "daily"]
         for tf in timeframes:
             try:
                 records = self.dm.get_stock_ratings(tf)
                 for r in records:
                     sym = r.get("symbol", "").upper()
+                    recent_high = float(r.get("recent_high") or r.get("box_top") or 0.0)
                     trigger_price = float(r.get("alert_trigger_price") or 0.0)
-                    recent_high = float(r.get("recent_high") or 0.0)
+                    if trigger_price <= 0 and recent_high > 0:
+                        trigger_price = round(recent_high * 1.01, 2)
                     
                     if not sym or trigger_price <= 0:
                         continue
                         
                     try:
                         token = get_instrument_token(sym)
+                        is_darvas = (tf == "darvas") or target_map.get(token, {}).get("is_darvas", False)
+                        existing_tf = target_map.get(token, {}).get("timeframe")
+                        final_tf = "darvas" if (tf == "darvas" or existing_tf == "darvas") else tf
                         target_map[token] = {
                             "symbol": sym,
-                            "timeframe": tf,
+                            "timeframe": final_tf,
+                            "is_darvas": is_darvas,
                             "recent_high": recent_high,
                             "alert_trigger_price": trigger_price,
                             "rating": r.get("rating", 4.0),
@@ -327,21 +333,36 @@ class ZerodhaWebSocketAlertEngine:
         except Exception as analysis_err:
             logger.error(f"5-Min Good Buyer Volume Analysis failed for {symbol}: {analysis_err}")
 
-        # 3. Dispatch enriched alert via Telegram ONLY IF BUY CONVICTION RATING is 8/10, 9/10, 10/10 or 1/10, 2/10, 3/10
+        # 3. Dispatch Telegram alert ONLY IF the stock is part of the DARVAS BOX table list
         try:
             telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
             telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            buyer_score = buyer_analysis.get("score_out_of_10", 0)
 
             if telegram_token and telegram_chat_id:
-                from scripts.five_min_buyer_volume_analyzer import is_telegram_alert_allowed, format_telegram_buyer_analysis_text
+                from data_manager import DataManager, is_telegram_darvas_breakout_allowed
                 
-                # Filter: Send Telegram alerts ONLY IF rating is 8, 9, 10 or 1, 2, 3. Ignore 4, 5, 6, 7.
-                if not is_telegram_alert_allowed(buyer_score):
-                    logger.info(f"⏭️ [TELEGRAM FILTER] Ignored Telegram message for {symbol}: BUY CONVICTION RATING is {buyer_score}/10 (Only 8/10, 9/10, 10/10 or 1/10, 2/10, 3/10 are sent to Telegram).")
+                # STRICT DARVAS BOX 1% BREAKOUT FILTER: Only send Telegram alert if stock exists in 'darvas' table list AND price >= 1% breakout level
+                is_allowed, filter_msg = is_telegram_darvas_breakout_allowed(symbol, current_price)
+                if not is_allowed:
+                    logger.info(f"⏭️ [TELEGRAM DARVAS FILTER] Skipped Telegram alert for {symbol}: {filter_msg}")
                     return
 
-                tg_text = format_telegram_buyer_analysis_text(symbol, meta, buyer_analysis)
+                _dm = DataManager()
+                darvas_doc = _dm.db["darvas"].find_one({"symbol": symbol}) or {}
+                box_top = darvas_doc.get("box_top") or meta.get("recent_high") or current_price
+                box_bottom = darvas_doc.get("box_bottom") or 0.0
+                vol_ratio = darvas_doc.get("volume_surge_ratio") or 1.5
+                close_strength = darvas_doc.get("close_strength_pct") or 80.0
+
+                tg_text = (
+                    f"⚡ <b>TRUE DARVAS BOX BREAKOUT ALERT</b> - <b>{symbol}</b>\n\n"
+                    f"📈 <b>Live Price</b>: ₹{current_price:,.2f} (Trigger: ₹{trigger_price:,.2f})\n"
+                    f"📦 <b>Box Range</b>: [₹{box_bottom:,.2f} - ₹{box_top:,.2f}]\n"
+                    f"🔥 <b>Volume Surge Ratio</b>: <b>{vol_ratio:.1f}x 20d Avg</b>\n"
+                    f"💪 <b>Close Strength</b>: <b>{close_strength:.1f}%</b> of daily range\n"
+                    f"🎯 <b>Timeframe Source</b>: {meta.get('timeframe', 'DAILY').upper()}\n\n"
+                    f"📝 <i>{darvas_doc.get('reason', 'Confirmed Darvas Box Breakout')}</i>"
+                )
                 
                 tg_url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
                 tg_payload = {
@@ -349,25 +370,12 @@ class ZerodhaWebSocketAlertEngine:
                     "text": tg_text,
                     "parse_mode": "HTML"
                 }
-                tg_resp = requests.post(tg_url, json=tg_payload, timeout=12)
                 if tg_resp.status_code == 200:
-                    logger.info(f"Successfully dispatched 5-Min Good Buyer Volume Telegram Alert for {symbol} (Conviction Rating: {buyer_score}/10)!")
+                    logger.info(f"⚡ [TELEGRAM] Successfully dispatched True Darvas Box Breakout Telegram Alert for {symbol}!")
                 else:
                     logger.error(f"Telegram dispatch failed: Status {tg_resp.status_code}, Body: {tg_resp.text}")
             else:
-                from momentum_volume_monitor import send_alert
-                send_alert(
-                    ticker=symbol,
-                    timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    price=current_price,
-                    obv_zscore=2.5,
-                    tsi_slope=3.0,
-                    tsi_val=28.0,
-                    tsi_signal_val=22.0,
-                    obv_condition=True,
-                    tsi_condition=True,
-                    tsi_crossed=True
-                )
+                logger.info(f"Telegram token/chat_id not set; skipped Telegram dispatch for {symbol}.")
         except Exception as alert_err:
             logger.error(f"Failed to send breakout alert for {symbol}: {alert_err}")
 

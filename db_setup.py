@@ -150,7 +150,7 @@ def apply_validation_schemas(db) -> None:
         logger.warning(f"Could not apply schema validation to 'candles_10m' collection: {e}")
 
     # Apply monthly, weekly, daily rating tables validation & unique symbol index
-    for coll_name in ["monthly", "weekly", "daily"]:
+    for coll_name in ["monthly", "weekly", "daily", "manual", "darvas"]:
         try:
             if coll_name not in existing_collections:
                 db.create_collection(coll_name, validator=rating_table_schema)

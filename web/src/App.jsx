@@ -26,14 +26,14 @@ import DerivativesSpeedometer from './components/DerivativesSpeedometer';
 const API_BASE_URL = '/api';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('monthly'); // 'monthly' | 'weekly' | 'daily' | 'manual' | 'active_gtts' | 'todays_race' | 'race'
+  const [activeTab, setActiveTab] = useState('monthly'); // 'monthly' | 'weekly' | 'daily' | 'manual' | 'darvas' | 'active_gtts' | 'todays_race' | 'race'
   const [stocksData, setStocksData] = useState([]);
   const [gttsData, setGttsData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [runningPipeline, setRunningPipeline] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [wsStatus, setWsStatus] = useState({ running: false, monitored_tokens_count: 0 });
-  const [tabCounts, setTabCounts] = useState({ monthly: 0, weekly: 0, daily: 0, manual: 0, active_gtts: 0, todays_race: 0, race: 0 });
+  const [tabCounts, setTabCounts] = useState({ monthly: 0, weekly: 0, daily: 0, manual: 0, darvas: 0, active_gtts: 0, todays_race: 0, race: 0 });
   const [selectedSymbols, setSelectedSymbols] = useState([]);
 
   // Manual Stock Modal State
@@ -41,10 +41,37 @@ export default function App() {
   const [resettingGttSymbol, setResettingGttSymbol] = useState(null);
   const [resettingAllGtts, setResettingAllGtts] = useState(false);
   const [syncingGtts, setSyncingGtts] = useState(false);
+  const [scanningDarvas, setScanningDarvas] = useState(false);
   const [manualSymbol, setManualSymbol] = useState('');
   const [manualReason, setManualReason] = useState('');
   const [addingManualStock, setAddingManualStock] = useState(false);
   const [manualError, setManualError] = useState('');
+
+  const handleScanDarvas = async () => {
+    setScanningDarvas(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/darvas/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (res.ok && data.status === 'success') {
+        fetchAllTabCounts();
+        if (activeTab === 'darvas') {
+          fetchTimeframeRatings('darvas');
+        }
+        const scanned = data.scanned_count ?? (data.data ? data.data.length : 0);
+        const qualified = data.qualified_count ?? (data.data ? data.data.length : 0);
+        alert(`⚡ Darvas Box Scan Complete!\nScanned ${scanned} watchlist stocks.\nFound ${qualified} qualified Darvas Box setups!`);
+      } else {
+        alert(`Darvas Scan error: ${data.detail || data.message || 'Scan failed'}`);
+      }
+    } catch (err) {
+      alert(`Error triggering Darvas scan: ${err.message}`);
+    } finally {
+      setScanningDarvas(false);
+    }
+  };
 
   // NSE Derivatives Analyst State
   const [derivativesData, setDerivativesData] = useState(null);
@@ -202,7 +229,7 @@ export default function App() {
 
   // Fetch counts for all timeframes for tab badges
   const fetchAllTabCounts = async () => {
-    for (const tf of ['monthly', 'weekly', 'daily', 'manual']) {
+    for (const tf of ['monthly', 'weekly', 'daily', 'manual', 'darvas']) {
       try {
         const res = await fetch(`${API_BASE_URL}/ratings/${tf}`);
         if (res.ok) {
@@ -640,6 +667,9 @@ export default function App() {
       if (sortKey === 'rating') {
         valA = a.rating || 0;
         valB = b.rating || 0;
+      } else if (sortKey === 'close_strength_pct') {
+        valA = a.close_strength_pct || 0;
+        valB = b.close_strength_pct || 0;
       } else if (sortKey === 'updated_at') {
         valA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
         valB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
@@ -788,6 +818,26 @@ export default function App() {
             )}
           </button>
 
+          <button
+            className="btn-primary"
+            onClick={handleScanDarvas}
+            disabled={scanningDarvas}
+            style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)', border: 'none' }}
+            title="Scan all watchlist stocks against Darvas Box rules & purge consolidated setups"
+          >
+            {scanningDarvas ? (
+              <>
+                <div className="loading-spinner"></div>
+                <span>Scanning Darvas...</span>
+              </>
+            ) : (
+              <>
+                <Flame size={16} color="#fbbf24" />
+                <span>⚡ Scan Darvas</span>
+              </>
+            )}
+          </button>
+
 
           <button
             className="btn-icon-secondary"
@@ -904,6 +954,17 @@ export default function App() {
             <span className="tab-badge" style={{ background: '#ec4899', color: '#fff' }}>{tabCounts.manual || 0}</span>
           </button>
 
+          {/* ⚡ TAB 5: TRUE DARVAS BOX BREAKOUTS */}
+          <button
+            className={`tab-btn ${activeTab === 'darvas' ? 'active' : ''}`}
+            onClick={() => setActiveTab('darvas')}
+            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
+          >
+            <Flame size={16} color="#3b82f6" />
+            <span>⚡ Darvas Box</span>
+            <span className="tab-badge" style={{ background: '#3b82f6', color: '#fff' }}>{tabCounts.darvas || 0}</span>
+          </button>
+
           {/* ⚡ TAB 4: ACTIVE & TRIGGERED ZERODHA GTTS */}
           <button
             className={`tab-btn ${activeTab === 'active_gtts' || activeTab === 'gtts' ? 'active' : ''}`}
@@ -953,6 +1014,16 @@ export default function App() {
               <Star size={13} />
               <span>Grok Rating {sortKey === 'rating' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
             </button>
+
+            {activeTab === 'darvas' && (
+              <button
+                className={`sort-pill ${sortKey === 'close_strength_pct' ? 'active' : ''}`}
+                onClick={() => handleSort('close_strength_pct')}
+              >
+                <Zap size={13} color="#fbbf24" />
+                <span>Close Strength {sortKey === 'close_strength_pct' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+              </button>
+            )}
 
             <button
               className={`sort-pill ${sortKey === 'updated_at' ? 'active' : ''}`}
@@ -1207,6 +1278,15 @@ export default function App() {
                     </div>
                   </th>
 
+                  {activeTab === 'darvas' && (
+                    <th className="sortable-th" onClick={() => handleSort('close_strength_pct')}>
+                      <div className="th-content">
+                        <span>Close Strength %</span>
+                        {renderSortIcon('close_strength_pct')}
+                      </div>
+                    </th>
+                  )}
+
                   <th>Breakout Reason & Context</th>
 
                   <th className="sortable-th" onClick={() => handleSort('recent_high')}>
@@ -1317,14 +1397,61 @@ export default function App() {
                         <td>
                           <div className="rating-pill">
                             <Star size={14} fill="#10b981" color="#10b981" />
-                            <span>{(item.rating || 4.0).toFixed(1)}</span>
+                            <span>{(item.rating || 5.0).toFixed(1)}</span>
                           </div>
                         </td>
 
-                        {/* Analysis Reason */}
+                        {/* Close Strength % (Darvas Tab) */}
+                        {activeTab === 'darvas' && (
+                          <td>
+                            <div className="close-strength-pill" style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              background: (item.close_strength_pct || 0) >= 75 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(107, 114, 128, 0.2)',
+                              color: (item.close_strength_pct || 0) >= 75 ? '#fbbf24' : '#9ca3af',
+                              border: (item.close_strength_pct || 0) >= 75 ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid rgba(107, 114, 128, 0.4)',
+                              borderRadius: '6px',
+                              padding: '4px 8px',
+                              fontSize: '0.82rem',
+                              fontWeight: 600
+                            }}>
+                              <Zap size={13} color={(item.close_strength_pct || 0) >= 75 ? '#fbbf24' : '#9ca3af'} />
+                              <span>{(item.close_strength_pct || 0).toFixed(1)}%</span>
+                            </div>
+                          </td>
+                        )}
+
+                        {/* Analysis Reason & Darvas Metrics */}
                         <td>
                           <div className="reason-text">
-                            {item.reason || 'Strong TSI & volume breakout setup.'}
+                            {activeTab === 'darvas' ? (
+                              <div>
+                                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.3rem' }}>
+                                  <span style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
+                                    Box Top: ₹{item.box_top || recentHigh}
+                                  </span>
+                                  {item.box_bottom > 0 && (
+                                    <span style={{ background: 'rgba(107, 114, 128, 0.2)', color: '#9ca3af', border: '1px solid rgba(107, 114, 128, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
+                                      Box Bottom: ₹{item.box_bottom}
+                                    </span>
+                                  )}
+                                  {item.volume_surge_ratio > 0 && (
+                                    <span style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
+                                      🔥 Vol Ratio: {item.volume_surge_ratio}x Avg
+                                    </span>
+                                  )}
+                                  {item.close_strength_pct > 0 && (
+                                    <span style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
+                                      💪 Close Strength: {item.close_strength_pct}%
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '0.8rem', color: '#cbd5e1' }}>{item.reason}</div>
+                              </div>
+                            ) : (
+                              item.reason || 'Strong TSI & volume breakout setup.'
+                            )}
                           </div>
                         </td>
 

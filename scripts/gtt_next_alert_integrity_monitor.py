@@ -118,6 +118,21 @@ def audit_and_restore_next_gtt_alerts(dry_run: bool = False) -> dict:
                         
                         if restore_res.get("gtt_id") and "ZERODHA_GTT_ACTIVE" in restore_res.get("status", ""):
                             restored_count += 1
+                            # Update alert_count and stamp last_alerted_at to current timestamp for Today's Race
+                            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                            col.update_one(
+                                {"symbol": sym},
+                                {
+                                    "$inc": {"alert_count": 1, "today_alert_count": 1},
+                                    "$set": {"last_alerted_at": now_utc}
+                                }
+                            )
+                            # Automatically trigger Darvas Box Scanner on GTT alerted stock
+                            try:
+                                from scripts.darvas_box_scanner import scan_and_save_darvas_stock
+                                scan_and_save_darvas_stock(sym, timeframe=tf)
+                            except Exception as d_err:
+                                logger.warning(f"Darvas scan notice for {sym}: {d_err}")
                             restored_list.append({
                                 "symbol": sym,
                                 "timeframe": tf,

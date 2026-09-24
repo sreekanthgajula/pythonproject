@@ -393,6 +393,17 @@ def send_alert(
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if telegram_token and telegram_chat_id:
+        # STRICT DARVAS BOX 1% BREAKOUT FILTER: Only send Telegram alert if stock exists in 'darvas' table list AND price >= 1% breakout level
+        try:
+            from data_manager import is_telegram_darvas_breakout_allowed
+            is_allowed, filter_msg = is_telegram_darvas_breakout_allowed(ticker, price)
+            if not is_allowed:
+                logger.info(f"⏭️ [TELEGRAM DARVAS FILTER] Skipped Telegram alert for {ticker}: {filter_msg}")
+                telegram_token = None
+        except Exception as filter_err:
+            logger.warning(f"Could not verify Darvas 1% breakout status for {ticker}: {filter_err}")
+
+    if telegram_token and telegram_chat_id:
         def format_simple_ist_time(ts_val):
             if not ts_val:
                 return ""

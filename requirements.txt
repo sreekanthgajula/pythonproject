@@ -1,1 +1,24 @@
-.
+Act as an NSE derivatives analyst. 
+
+Based on this data, give me a single directional bias (Bullish, Bearish, or Neutral), the expected day range, and key invalidation level.
+
+- Nifty Spot: [e.g., 24,850]
+- GIFT Nifty: [e.g., 24,920]
+- Put-Call Ratio (PCR): [e.g., 1.15]
+- India VIX: [e.g., 13.2]
+- Biggest Call Strike (Resistance): [e.g., 25,000]
+- Biggest Put Strike (Support): [e.g., 24,800]
+- Top Global/Domestic News: [Paste 2-3 lines of news]
+
+Format output strictly as:
+1. Verdict: [Bullish / Bearish / Neutral]
+2. Key Reason: [1 sentence]
+3. Expected Range: [Support] to [Resistance]
+4. Bias Invalidated If Spot Breaks: [Strike Level]
+
+
+use grok and zerodha api to fetch data from the above format and give output 
+
+
+
+

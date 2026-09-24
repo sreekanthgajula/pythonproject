@@ -194,7 +194,7 @@ class DataManager:
         Returns:
             bool: True if saved successfully, False otherwise.
         """
-        valid_tables = {"monthly", "weekly", "daily", "manual"}
+        valid_tables = {"monthly", "weekly", "daily", "manual", "darvas"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -228,7 +228,7 @@ class DataManager:
         Returns:
             list[dict]: List of rating records.
         """
-        valid_tables = {"monthly", "weekly", "daily", "manual"}
+        valid_tables = {"monthly", "weekly", "daily", "manual", "darvas"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -243,7 +243,7 @@ class DataManager:
 
     def delete_stock_rating(self, table_name: str, symbol: str) -> bool:
         """Deletes a single stock document from the specified timeframe table and cancels any associated Zerodha GTT alert."""
-        valid_tables = {"monthly", "weekly", "daily", "manual"}
+        valid_tables = {"monthly", "weekly", "daily", "manual", "darvas"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -273,7 +273,7 @@ class DataManager:
 
     def clear_all_stock_ratings(self, table_name: str) -> int:
         """Deletes all stock documents from the specified timeframe table and cancels their active Zerodha GTT alerts."""
-        valid_tables = {"monthly", "weekly", "daily", "manual"}
+        valid_tables = {"monthly", "weekly", "daily", "manual", "darvas"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -308,7 +308,7 @@ class DataManager:
 
     def delete_batch_stock_ratings(self, table_name: str, symbols: list) -> int:
         """Deletes a list of stock symbols from the specified timeframe table and cancels any active Zerodha GTT alerts for them."""
-        valid_tables = {"monthly", "weekly", "daily", "manual"}
+        valid_tables = {"monthly", "weekly", "daily", "manual", "darvas"}
         clean_table = table_name.strip().lower()
         if clean_table not in valid_tables:
             raise ValueError(f"Invalid table name '{table_name}'. Must be one of {valid_tables}")
@@ -645,4 +645,42 @@ class DataManager:
         }
 
 
-
+def is_telegram_darvas_breakout_allowed(symbol: str, price: float = None) -> tuple[bool, str]:
+    """
+    STRICT TELEGRAM ALERT FILTER:
+    Telegram notifications across the TradingAgents platform are ONLY sent if:
+    1. The stock exists in the 'darvas' MongoDB database table.
+    2. The stock hits or exceeds a 1% breakout level above box_top (price >= box_top * 1.01 or price >= alert_trigger_price).
+    
+    Returns:
+        tuple[bool, str]: (is_allowed, reason_message)
+    """
+    if not symbol:
+        return False, "Symbol is empty or invalid."
+        
+    clean_sym = symbol.strip().upper().replace(".NS", "").replace("-EQ", "")
+    
+    try:
+        dm = DataManager()
+        darvas_doc = dm.db["darvas"].find_one({"symbol": clean_sym})
+        if not darvas_doc:
+            return False, f"Symbol '{clean_sym}' is NOT in the Darvas Box (darvas) database table."
+            
+        box_top = darvas_doc.get("box_top") or darvas_doc.get("recent_high")
+        alert_trigger_price = darvas_doc.get("alert_trigger_price")
+        
+        if alert_trigger_price is not None and float(alert_trigger_price) > 0:
+            trigger_level = float(alert_trigger_price)
+        elif box_top is not None and float(box_top) > 0:
+            trigger_level = round(float(box_top) * 1.01, 2)
+        else:
+            trigger_level = None
+            
+        if price is not None and float(price) > 0 and trigger_level is not None:
+            if float(price) < trigger_level:
+                return False, f"Symbol '{clean_sym}' price ₹{float(price):,.2f} has NOT reached 1% breakout level ₹{trigger_level:,.2f} (Box Top: ₹{box_top or 0:,.2f})."
+                
+        return True, f"Symbol '{clean_sym}' qualified for Darvas 1% breakout Telegram alert (Price: ₹{float(price) if price else 0:,.2f} >= Trigger: ₹{trigger_level or 0:,.2f})."
+    except Exception as e:
+        logger.error(f"Error checking Darvas 1% breakout status for {clean_sym}: {e}")
+        return False, f"Error checking Darvas status: {e}"

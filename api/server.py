@@ -991,16 +991,73 @@ def clear_all_manual_stocks_endpoint():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear manual table: {e}")
 
+@app.post("/api/darvas/scan")
+@app.post("/api/ratings/scan-darvas")
+def trigger_darvas_box_scan():
+    """
+    Manually scans all stocks across watchlists (monthly, weekly, daily, manual)
+    against Darvas Box rules, updates the 'darvas' MongoDB collection, and purges consolidated stocks.
+    """
+    try:
+        from data_manager import DataManager
+        from scripts.darvas_box_scanner import scan_and_save_darvas_stock, purge_invalidated_darvas_stocks
+        
+        dm = DataManager()
+        all_symbols = set()
+        for tf in ['monthly', 'weekly', 'daily', 'manual']:
+            records = dm.get_stock_ratings(tf)
+            for r in records:
+                sym = r.get('symbol')
+                if sym:
+                    all_symbols.add(sym.strip().upper())
+                    
+        scanned_count = len(all_symbols)
+        for s in all_symbols:
+            try:
+                scan_and_save_darvas_stock(s)
+            except Exception as s_err:
+                print(f"[SCAN-DARVAS] Error scanning {s}: {s_err}")
+                
+        purge_res = purge_invalidated_darvas_stocks()
+        
+        # Reload live WebSocket alert targets
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_alert_engine.load_monitored_targets()
+        except Exception:
+            pass
+
+        qualified_docs = dm.get_stock_ratings("darvas")
+        return {
+            "status": "success",
+            "message": f"Successfully scanned {scanned_count} watchlist stocks. Found {len(qualified_docs)} qualified Darvas Box breakouts.",
+            "scanned_count": scanned_count,
+            "qualified_count": len(qualified_docs),
+            "data": qualified_docs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to execute Darvas Box scan: {e}")
+
+
 @app.get("/api/ratings/{timeframe}")
 def get_stock_ratings(timeframe: str):
-    """Retrieve Grok-evaluated high-conviction stocks and 1% trigger prices for a timeframe ('monthly', 'weekly', 'daily', 'manual')."""
+    """Retrieve Grok-evaluated high-conviction stocks and 1% trigger prices for a timeframe ('monthly', 'weekly', 'daily', 'manual', 'darvas')."""
     tf_clean = timeframe.strip().lower()
-    if tf_clean not in ("monthly", "weekly", "daily", "manual"):
-        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', or 'manual'")
+    if tf_clean not in ("monthly", "weekly", "daily", "manual", "darvas"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', 'manual', or 'darvas'")
         
     try:
         from data_manager import DataManager
         dm = DataManager()
+
+        # Automatically purge invalidated or consolidated Darvas stocks on tab fetch
+        if tf_clean == "darvas":
+            try:
+                from scripts.darvas_box_scanner import purge_invalidated_darvas_stocks
+                purge_invalidated_darvas_stocks()
+            except Exception as purge_err:
+                print(f"[DARVAS-PURGE] Warning: Failed to run automatic Darvas purge: {purge_err}")
+
         records = dm.get_stock_ratings(tf_clean)
         # Format datetimes to ISO strings for JSON serialization
         for r in records:
@@ -1018,8 +1075,8 @@ def get_stock_ratings(timeframe: str):
 def clear_all_timeframe_ratings(timeframe: str):
     """Deletes all stock records from a specific timeframe table ('monthly', 'weekly', 'daily', 'manual')."""
     tf_clean = timeframe.strip().lower()
-    if tf_clean not in ("monthly", "weekly", "daily", "manual"):
-        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', or 'manual'")
+    if tf_clean not in ("monthly", "weekly", "daily", "manual", "darvas"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', 'manual', or 'darvas'")
         
     try:
         from data_manager import DataManager
@@ -1046,8 +1103,8 @@ def clear_all_timeframe_ratings(timeframe: str):
 def delete_single_stock_rating(timeframe: str, symbol: str):
     """Deletes an individual stock record from a specific timeframe table ('monthly', 'weekly', 'daily', 'manual')."""
     tf_clean = timeframe.strip().lower()
-    if tf_clean not in ("monthly", "weekly", "daily", "manual"):
-        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', or 'manual'")
+    if tf_clean not in ("monthly", "weekly", "daily", "manual", "darvas"):
+        raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', 'manual', or 'darvas'")
         
     sym_clean = symbol.strip().upper()
     try:
@@ -1259,7 +1316,9 @@ def audit_and_fix_next_gtt_alerts():
         res = audit_and_restore_next_gtt_alerts(dry_run=False)
         return res
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to run GTT next alert integrity audit: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to audit and fix GTT alerts: {e}")
+
+
 
 @app.get("/api/derivatives/analysis")
 def get_derivatives_analysis(force_grok: bool = False):

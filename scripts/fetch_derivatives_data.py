@@ -430,7 +430,25 @@ def send_telegram_derivatives_alert(derivatives_data: dict = None, force_send: b
     tg_text = format_telegram_derivatives_alert(derivatives_data)
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    
+
+    # STRICT DARVAS BOX 1% BREAKOUT FILTER:
+    if not force_send:
+        symbol = derivatives_data.get("symbol") or derivatives_data.get("ticker") or "NIFTY"
+        spot_price = derivatives_data.get("nifty_spot") or derivatives_data.get("price")
+        try:
+            from data_manager import is_telegram_darvas_breakout_allowed
+            is_allowed, filter_msg = is_telegram_darvas_breakout_allowed(symbol, spot_price)
+            if not is_allowed:
+                print(f"[TELEGRAM DARVAS FILTER] Skipped derivatives Telegram alert for {symbol}: {filter_msg}")
+                return {
+                    "status": "filtered",
+                    "sent": False,
+                    "reason": filter_msg,
+                    "sample_telegram_text": tg_text
+                }
+        except Exception as filter_err:
+            print(f"[TELEGRAM DARVAS FILTER] Error validating Darvas status for {symbol}: {filter_err}")
+
     if not token or not chat_id:
         print("[TELEGRAM] Credentials not configured in .env (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID). Mock alert generated.")
         return {
