@@ -1040,7 +1040,7 @@ def trigger_darvas_box_scan():
 
 
 @app.get("/api/ratings/{timeframe}")
-def get_stock_ratings(timeframe: str):
+def get_stock_ratings(timeframe: str, background_tasks: BackgroundTasks):
     """Retrieve Grok-evaluated high-conviction stocks and 1% trigger prices for a timeframe ('monthly', 'weekly', 'daily', 'manual', 'darvas')."""
     tf_clean = timeframe.strip().lower()
     if tf_clean not in ("monthly", "weekly", "daily", "manual", "darvas"):
@@ -1050,13 +1050,13 @@ def get_stock_ratings(timeframe: str):
         from data_manager import DataManager
         dm = DataManager()
 
-        # Automatically purge invalidated or consolidated Darvas stocks on tab fetch
+        # Run Darvas purge audit asynchronously in background to ensure 0ms instant tab loading
         if tf_clean == "darvas":
             try:
                 from scripts.darvas_box_scanner import purge_invalidated_darvas_stocks
-                purge_invalidated_darvas_stocks()
+                background_tasks.add_task(purge_invalidated_darvas_stocks)
             except Exception as purge_err:
-                print(f"[DARVAS-PURGE] Warning: Failed to run automatic Darvas purge: {purge_err}")
+                print(f"[DARVAS-PURGE] Warning: Failed to schedule background Darvas purge: {purge_err}")
 
         records = dm.get_stock_ratings(tf_clean)
         # Format datetimes to ISO strings for JSON serialization
