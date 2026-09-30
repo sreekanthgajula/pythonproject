@@ -83,16 +83,31 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
     return () => clearInterval(interval);
   }, [activeMode]);
 
-  // Strict defensive mode filtering to guarantee consistent stock subsets per tab
-  const modeFilteredRace = raceData.filter(item => {
+  const getStockChangePct = (stock) => {
     if (activeMode === 'today') {
-      return item.is_today && (item.alert_count || 0) > 0;
+      return stock.daily_change_pct !== undefined ? stock.daily_change_pct : (stock.positive_change_pct || 0);
+    } else if (activeMode === 'past_week') {
+      return stock.weekly_change_pct !== undefined ? stock.weekly_change_pct : (stock.positive_change_pct || 0);
+    } else {
+      return stock.monthly_change_pct !== undefined ? stock.monthly_change_pct : (stock.positive_change_pct || stock.weekly_change_pct || 0);
     }
-    if (activeMode === 'past_week') {
-      return item.weekly_change_pct !== undefined && item.weekly_change_pct > 0;
-    }
-    return true; // All-Time
-  });
+  };
+
+  const getTimeframeLabel = () => {
+    if (activeMode === 'today') return 'Daily';
+    if (activeMode === 'past_week') return 'Weekly';
+    return 'Monthly';
+  };
+
+  // Filter & sort race standings strictly based on positive percentage change in selected timeframe
+  const modeFilteredRace = raceData
+    .map(item => ({
+      ...item,
+      pctGain: getStockChangePct(item)
+    }))
+    .filter(item => item.pctGain > 0)
+    .sort((a, b) => b.pctGain - a.pctGain)
+    .map((item, idx) => ({ ...item, rank: idx + 1 }));
 
   const filteredRace = modeFilteredRace.filter(item => {
     const sym = item.symbol || '';
@@ -105,7 +120,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
   const top2 = modeFilteredRace[1];
   const top3 = modeFilteredRace[2];
 
-  const maxAlerts = Math.max(...modeFilteredRace.map(d => (activeMode === 'past_week' ? (d.weekly_change_pct || 1) : (d.alert_count || 1))), 1);
+  const maxGain = Math.max(...modeFilteredRace.map(d => d.pctGain), 1);
 
   return (
     <div className="race-container">
@@ -123,17 +138,17 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
             <div>
               <h2>
                 {activeMode === 'today'
-                  ? "🏎️ Today's Stock Alert Grand Prix"
+                  ? "🏎️ Today's Positive % Change Grand Prix"
                   : activeMode === 'past_week'
-                  ? "📈 Week's Stock Alert Grand Prix"
-                  : "🏆 All-Time Stock Alert Grand Prix"}
+                  ? "📈 Week's Positive % Change Grand Prix"
+                  : "🏆 Monthly Positive % Change Grand Prix"}
               </h2>
               <p>
                 {activeMode === 'today'
-                  ? "Live Race for 1% Breakout Alerts Triggered Today (Past Days & Un-triggered Stocks Discarded)"
+                  ? "Live Stock Race Ranked Strictly by Today's Positive % Price Gain (>0% Daily Growth)"
                   : activeMode === 'past_week'
-                  ? "Race Strictly Filtered to Stocks Whose Market Price INCREASED (>0%) Over the Past Week (Past 7 Days)"
-                  : "Overall Standings Across All Tracked Candidates & Historical Triggers"}
+                  ? "Live Stock Race Ranked Strictly by Past Week's Positive % Price Gain (>0% 7-Day Growth)"
+                  : "Live Stock Race Ranked Strictly by Monthly / Timeframe Positive % Price Gain (>0% Growth)"}
               </p>
             </div>
           </div>
@@ -145,7 +160,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                 onClick={() => setActiveMode('today')}
               >
                 <Clock size={13} />
-                <span>Today's</span>
+                <span>Daily</span>
               </button>
 
               <button
@@ -153,7 +168,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                 onClick={() => setActiveMode('past_week')}
               >
                 <TrendingUp size={13} />
-                <span>Week's</span>
+                <span>Weekly</span>
               </button>
 
               <button
@@ -161,7 +176,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                 onClick={() => setActiveMode('all')}
               >
                 <Trophy size={13} />
-                <span>All-Time</span>
+                <span>Monthly</span>
               </button>
             </div>
 
@@ -200,15 +215,13 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               <div className="podium-symbol-row">
                 <span className="podium-symbol">{top2.symbol}</span>
                 <span className="exchange-tag">NSE</span>
-                {top2.weekly_change_pct !== undefined && top2.weekly_change_pct !== null && (
-                  <span className={`weekly-gain-badge ${top2.weekly_change_pct >= 0 ? 'pos' : 'neg'}`}>
-                    📈 {top2.weekly_change_pct >= 0 ? `+${top2.weekly_change_pct}%` : `${top2.weekly_change_pct}%`} 7d
-                  </span>
-                )}
+                <span className="weekly-gain-badge pos">
+                  📈 +{top2.pctGain.toFixed(2)}% ({getTimeframeLabel()})
+                </span>
               </div>
               <div className="podium-flame-box silver-flame">
                 <Flame size={18} />
-                <span>{activeMode === 'past_week' ? `+${top2.weekly_change_pct}% Past Week` : `${top2.alert_count} Alerts`}</span>
+                <span>+{top2.pctGain.toFixed(2)}% {getTimeframeLabel()} Gain</span>
               </div>
               <div className="podium-stats">
                 <div className="podium-stat">
@@ -242,15 +255,13 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               <div className="podium-symbol-row">
                 <span className="podium-symbol gold-title">{top1.symbol}</span>
                 <span className="exchange-tag gold-tag">LEADER</span>
-                {top1.weekly_change_pct !== undefined && top1.weekly_change_pct !== null && (
-                  <span className={`weekly-gain-badge ${top1.weekly_change_pct >= 0 ? 'pos' : 'neg'}`}>
-                    📈 {top1.weekly_change_pct >= 0 ? `+${top1.weekly_change_pct}%` : `${top1.weekly_change_pct}%`} 7d
-                  </span>
-                )}
+                <span className="weekly-gain-badge pos">
+                  📈 +{top1.pctGain.toFixed(2)}% ({getTimeframeLabel()})
+                </span>
               </div>
               <div className="podium-flame-box gold-flame">
                 <Flame size={22} />
-                <span>{activeMode === 'past_week' ? `+${top1.weekly_change_pct}% Past Week` : `${top1.alert_count} Alerts`}</span>
+                <span>+{top1.pctGain.toFixed(2)}% {getTimeframeLabel()} Gain</span>
               </div>
               <div className="podium-stats">
                 <div className="podium-stat">
@@ -280,15 +291,13 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               <div className="podium-symbol-row">
                 <span className="podium-symbol">{top3.symbol}</span>
                 <span className="exchange-tag">NSE</span>
-                {top3.weekly_change_pct !== undefined && top3.weekly_change_pct !== null && (
-                  <span className={`weekly-gain-badge ${top3.weekly_change_pct >= 0 ? 'pos' : 'neg'}`}>
-                    📈 {top3.weekly_change_pct >= 0 ? `+${top3.weekly_change_pct}%` : `${top3.weekly_change_pct}%`} 7d
-                  </span>
-                )}
+                <span className="weekly-gain-badge pos">
+                  📈 +{top3.pctGain.toFixed(2)}% ({getTimeframeLabel()})
+                </span>
               </div>
               <div className="podium-flame-box bronze-flame">
                 <Flame size={18} />
-                <span>{activeMode === 'past_week' ? `+${top3.weekly_change_pct}% Past Week` : `${top3.alert_count} Alerts`}</span>
+                <span>+{top3.pctGain.toFixed(2)}% {getTimeframeLabel()} Gain</span>
               </div>
               <div className="podium-stats">
                 <div className="podium-stat">
@@ -312,11 +321,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
       <div className="table-card race-list-card">
         <div className="race-list-header">
           <h3>
-            {activeMode === 'today'
-              ? "🏎️ Today's Breakout Alert Race Standings"
-              : activeMode === 'past_week'
-              ? "📈 Week's Breakout Alert Race Standings (>0% 7-Day Growth)"
-              : "🏆 All-Time Alert Race Standings"}
+            {`🏎️ ${getTimeframeLabel()}'s Stock Race Standings (>0% ${getTimeframeLabel()} Positive Gain)`}
           </h3>
           <span className="race-count-tag">{filteredRace.length} Contenders</span>
         </div>
@@ -330,26 +335,16 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
           <div className="empty-state">
             <div className="empty-icon">📈</div>
             <h3>
-              {activeMode === 'today'
-                ? "No 1% Breakout Alerts Triggered Today Yet"
-                : activeMode === 'past_week'
-                ? "No Stocks Increased in Price Over Past Week"
-                : "No Candidate Stocks Found"}
+              {`No Stocks with Positive % Price Gain in ${getTimeframeLabel()} Timeframe`}
             </h3>
             <p>
-              {activeMode === 'past_week'
-                ? "Stocks that did not increase in price over the past 7 days are filtered out from the Past Week Gainers Race."
-                : activeMode === 'today'
-                ? "Stocks triggered on previous days and un-triggered candidates are discarded from Today's Race."
-                : "Candidate stocks across all timeframes will appear here."}
+              {`Stocks that did not record positive price growth (>0%) in the ${getTimeframeLabel().toLowerCase()} timeframe are excluded from the race.`}
             </p>
           </div>
         ) : (
           <div className="race-bar-list">
             {filteredRace.map((stock) => {
-              const alertCount = stock.alert_count || 0;
-              const valForBar = activeMode === 'past_week' ? (stock.weekly_change_pct || 0) : alertCount;
-              const barPercent = Math.max(8, Math.min(100, (valForBar / maxAlerts) * 100));
+              const barPercent = Math.max(8, Math.min(100, (stock.pctGain / maxGain) * 100));
               const isGold = stock.rank === 1;
               const isSilver = stock.rank === 2;
               const isBronze = stock.rank === 3;
@@ -369,11 +364,9 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                     <div className="race-sym-line">
                       <span className="ticker-symbol">{stock.symbol}</span>
                       <span className="timeframe-tag">{stock.timeframe}</span>
-                      {stock.weekly_change_pct !== undefined && stock.weekly_change_pct !== null && (
-                        <span className={`weekly-gain-badge ${stock.weekly_change_pct >= 0 ? 'pos' : 'neg'}`}>
-                          📈 {stock.weekly_change_pct >= 0 ? `+${stock.weekly_change_pct}%` : `${stock.weekly_change_pct}%`} (1-Wk)
-                        </span>
-                      )}
+                      <span className="weekly-gain-badge pos">
+                        📈 +{stock.pctGain.toFixed(2)}% ({getTimeframeLabel()})
+                      </span>
                       <span className="price-tag">High: ₹{(stock.recent_high || 0).toFixed(2)}</span>
                       <span className="trigger-tag">Trigger: ₹{(stock.alert_trigger_price || 0).toFixed(2)}</span>
                     </div>
@@ -385,20 +378,16 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                         style={{ width: `${barPercent}%` }}
                       >
                         <span className="race-bar-text">
-                          {activeMode === 'past_week'
-                            ? `+${stock.weekly_change_pct}% Past Week Growth`
-                            : alertCount > 0
-                            ? `${alertCount} Triggers`
-                            : '0 Alerts'}
+                          +{stock.pctGain.toFixed(2)}% {getTimeframeLabel()} Growth
                         </span>
                       </div>
                     </div>
                   </div>
 
                   <div className="race-flame-cell">
-                    <div className={`race-flame-badge ${alertCount > 0 || (stock.weekly_change_pct && stock.weekly_change_pct > 0) ? 'active-flame' : 'idle-flame'}`}>
-                      {activeMode === 'past_week' ? <TrendingUp size={16} /> : <Flame size={16} />}
-                      <span>{activeMode === 'past_week' ? `+${stock.weekly_change_pct}%` : alertCount}</span>
+                    <div className="race-flame-badge active-flame">
+                      <TrendingUp size={16} />
+                      <span>+{stock.pctGain.toFixed(2)}%</span>
                     </div>
                   </div>
                 </div>

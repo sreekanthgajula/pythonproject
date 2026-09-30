@@ -42,53 +42,78 @@ active_alerts = []
 last_alerted_candle = {}
 telegram_sent_set = set()
 
-_weekly_returns_cache = {
+_stock_returns_cache = {
     "timestamp": 0.0,
     "data": {}
 }
 
-def _get_weekly_returns_cached(stock_symbols: list) -> dict:
+def _get_stock_returns_cached(stock_symbols: list) -> dict:
     import time, yfinance as yf
     now = time.time()
-    if now - _weekly_returns_cache["timestamp"] < 600 and _weekly_returns_cache["data"]:
-        return _weekly_returns_cache["data"]
+    if now - _stock_returns_cache["timestamp"] < 600 and _stock_returns_cache["data"]:
+        return _stock_returns_cache["data"]
 
-    weekly_returns = {}
+    returns_map = {}
+    if not stock_symbols:
+        return returns_map
+
     try:
-        all_syms = [s + ".NS" for s in stock_symbols if s]
+        all_syms = [s if s.endswith(".NS") else s + ".NS" for s in stock_symbols if s]
         if all_syms:
-            df = yf.download(all_syms, period="10d", progress=False)
+            df = yf.download(all_syms, period="1mo", progress=False)
             close_df = df["Close"] if (hasattr(df, "__getitem__") and "Close" in df) else df
             if hasattr(close_df, "columns"):
                 close_df = close_df.dropna(how="all").ffill().bfill()
                 for sym in stock_symbols:
-                    col = sym + ".NS"
+                    col = sym if sym.endswith(".NS") else sym + ".NS"
                     if col in close_df.columns:
                         s_series = close_df[col].dropna()
                         if len(s_series) >= 2:
-                            p_old = float(s_series.iloc[0])
-                            p_new = float(s_series.iloc[-1])
-                            if p_old > 0:
-                                pct = round(((p_new - p_old) / p_old) * 100.0, 2)
-                                weekly_returns[sym] = pct
+                            p_latest = float(s_series.iloc[-1])
+                            p_prev_day = float(s_series.iloc[-2])
+                            p_week_ago = float(s_series.iloc[-6]) if len(s_series) >= 6 else float(s_series.iloc[0])
+                            p_month_ago = float(s_series.iloc[0])
+
+                            daily_pct = round(((p_latest - p_prev_day) / p_prev_day) * 100.0, 2) if p_prev_day > 0 else 0.0
+                            weekly_pct = round(((p_latest - p_week_ago) / p_week_ago) * 100.0, 2) if p_week_ago > 0 else 0.0
+                            monthly_pct = round(((p_latest - p_month_ago) / p_month_ago) * 100.0, 2) if p_month_ago > 0 else 0.0
+
+                            returns_map[sym] = {
+                                "daily_change_pct": daily_pct,
+                                "weekly_change_pct": weekly_pct,
+                                "monthly_change_pct": monthly_pct
+                            }
             elif hasattr(close_df, "iloc"):
                 s_series = close_df.dropna()
                 if len(s_series) >= 2:
-                    p_old = float(s_series.iloc[0])
-                    p_new = float(s_series.iloc[-1])
-                    if p_old > 0:
-                        pct = round(((p_new - p_old) / p_old) * 100.0, 2)
-                        for sym in stock_symbols:
-                            weekly_returns[sym] = pct
-            if weekly_returns:
-                _weekly_returns_cache["timestamp"] = now
-                _weekly_returns_cache["data"] = weekly_returns
-    except Exception as yf_err:
-        print(f"[RACE API] Weekly returns calculation notice: {yf_err}")
-        if _weekly_returns_cache["data"]:
-            return _weekly_returns_cache["data"]
+                    p_latest = float(s_series.iloc[-1])
+                    p_prev_day = float(s_series.iloc[-2])
+                    p_week_ago = float(s_series.iloc[-6]) if len(s_series) >= 6 else float(s_series.iloc[0])
+                    p_month_ago = float(s_series.iloc[0])
 
-    return weekly_returns or _weekly_returns_cache.get("data", {})
+                    daily_pct = round(((p_latest - p_prev_day) / p_prev_day) * 100.0, 2) if p_prev_day > 0 else 0.0
+                    weekly_pct = round(((p_latest - p_week_ago) / p_week_ago) * 100.0, 2) if p_week_ago > 0 else 0.0
+                    monthly_pct = round(((p_latest - p_month_ago) / p_month_ago) * 100.0, 2) if p_month_ago > 0 else 0.0
+
+                    for sym in stock_symbols:
+                        returns_map[sym] = {
+                            "daily_change_pct": daily_pct,
+                            "weekly_change_pct": weekly_pct,
+                            "monthly_change_pct": monthly_pct
+                        }
+        if returns_map:
+            _stock_returns_cache["timestamp"] = now
+            _stock_returns_cache["data"] = returns_map
+    except Exception as yf_err:
+        print(f"[RACE API] Stock returns calculation notice: {yf_err}")
+        if _stock_returns_cache["data"]:
+            return _stock_returns_cache["data"]
+
+    return returns_map or _stock_returns_cache.get("data", {})
+
+def _get_weekly_returns_cached(stock_symbols: list) -> dict:
+    rets = _get_stock_returns_cached(stock_symbols)
+    return {sym: val.get("weekly_change_pct", 0.0) for sym, val in rets.items()}
 
 class WatchlistRequest(BaseModel):
     ticker: str
@@ -429,6 +454,89 @@ def run_derivatives_alert_monitor_loop():
             print(f"[DERIVATIVES-LOOP] Background options alert loop note: {e}")
         time.sleep(300)
 
+
+def run_paper_trading_loop():
+    """
+    Background daemon loop running every 5 minutes.
+    Fetches latest candles for tracked stocks, evaluates all 10 automated paper trading strategies,
+    and executes paper trades & saves portfolio snapshots into MongoDB.
+    """
+    time.sleep(10)
+    print("[PAPER-LOOP] Starting automated 5-minute Paper Trading strategy engine loop...")
+    while True:
+        try:
+            from data_manager import DataManager
+            import yfinance as yf
+            import pandas as pd
+
+            dm = DataManager()
+            paper_engine = get_paper_engine()
+            if not paper_engine:
+                time.sleep(60)
+                continue
+
+            symbols = set()
+            for col_name in ["darvas", "daily", "weekly", "monthly", "manual"]:
+                try:
+                    docs = list(dm.db[col_name].find({}, {"symbol": 1}))
+                    for d in docs:
+                        s = (d.get("symbol") or "").upper().replace(".NS", "").replace("-EQ", "")
+                        if s:
+                            symbols.add(s)
+                except Exception:
+                    pass
+
+            sym_list = list(symbols)[:60]
+            if sym_list:
+                tickers = [s + ".NS" if not s.endswith(".NS") else s for s in sym_list]
+                df_all = yf.download(tickers, period="1mo", progress=False)
+
+                for sym in sym_list:
+                    try:
+                        ticker_sym = sym if sym.endswith(".NS") else sym + ".NS"
+                        if hasattr(df_all, "columns") and isinstance(df_all.columns, pd.MultiIndex):
+                            if ticker_sym in df_all["Close"].columns:
+                                s_df = pd.DataFrame({
+                                    "open": df_all["Open"][ticker_sym],
+                                    "high": df_all["High"][ticker_sym],
+                                    "low": df_all["Low"][ticker_sym],
+                                    "close": df_all["Close"][ticker_sym],
+                                    "volume": df_all["Volume"][ticker_sym]
+                                }).dropna()
+                            else:
+                                continue
+                        else:
+                            s_df = df_all[['Open', 'High', 'Low', 'Close', 'Volume']].rename(
+                                columns={'Open':'open', 'High':'high', 'Low':'low', 'Close':'close', 'Volume':'volume'}
+                            ).dropna()
+
+                        if len(s_df) >= 15:
+                            c_last = s_df.iloc[-1]
+                            o_val = float(c_last['open'].iloc[0] if hasattr(c_last['open'], 'iloc') else c_last['open'])
+                            h_val = float(c_last['high'].iloc[0] if hasattr(c_last['high'], 'iloc') else c_last['high'])
+                            l_val = float(c_last['low'].iloc[0] if hasattr(c_last['low'], 'iloc') else c_last['low'])
+                            c_val = float(c_last['close'].iloc[0] if hasattr(c_last['close'], 'iloc') else c_last['close'])
+                            v_val = float(c_last['volume'].iloc[0] if hasattr(c_last['volume'], 'iloc') else c_last['volume'])
+
+                            candle = {
+                                "instrument_token": abs(hash(sym)) % 1000000,
+                                "symbol": sym,
+                                "open": o_val,
+                                "high": h_val,
+                                "low": l_val,
+                                "close": c_val,
+                                "volume": v_val,
+                                "timestamp": datetime.datetime.utcnow()
+                            }
+                            paper_engine.on_candle(candle, s_df)
+                    except Exception as s_err:
+                        pass
+        except Exception as e:
+            print(f"[PAPER-LOOP] Note on background paper trading loop: {e}")
+
+        time.sleep(300)
+
+
 @app.on_event("startup")
 def startup_event():
     # Start the daily Zerodha connection check loop in a daemon thread
@@ -439,6 +547,9 @@ def startup_event():
     # Start automated 5-minute derivatives options pressure alert loop
     threading.Thread(target=run_derivatives_alert_monitor_loop, daemon=True).start()
     print("[DERIVATIVES-LOOP] Automated 5-minute options pressure alert monitor loop started.")
+    # Start automated 5-minute paper trading strategy engine loop
+    threading.Thread(target=run_paper_trading_loop, daemon=True).start()
+    print("[PAPER-LOOP] Automated 5-minute paper trading strategy engine loop started.")
     # Start Zerodha KiteTicker WebSocket alert engine
     try:
         from scripts.zerodha_websocket_alert_listener import ws_alert_engine
@@ -1238,27 +1349,58 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             except Exception as tf_err:
                 print(f"[RACE API] Error fetching {tf} table: {tf_err}")
 
-        # Compute 1-week percentage price change for stocks using fast server cache
-        weekly_returns = _get_weekly_returns_cached(list(stocks_map.keys()))
+        # Compute daily, weekly, and monthly percentage returns for all stocks
+        returns_map = _get_stock_returns_cached(list(stocks_map.keys()))
 
         filtered_items = []
         for sym, item in stocks_map.items():
-            weekly_gain = weekly_returns.get(sym, 0.0)
-            item["weekly_change_pct"] = weekly_gain
+            ret = returns_map.get(sym, {})
+            daily_gain = ret.get("daily_change_pct", 0.0)
+            weekly_gain = ret.get("weekly_change_pct", 0.0)
+            monthly_gain = ret.get("monthly_change_pct", 0.0)
 
-            if past_week_only:
-                # STRICT FILTERING for Past Week Gainers Race:
-                # ONLY include stocks whose market price INCREASED (>0%) over the past week.
-                if weekly_gain <= 0:
-                    continue
+            # Fallback if yfinance returns 0.0 but breakout trigger price vs recent high shows positive gain
+            rec_h = item.get("recent_high", 0.0)
+            trig_p = item.get("alert_trigger_price", 0.0)
+            trig_gain = round(((rec_h - trig_p) / trig_p * 100.0), 2) if (trig_p > 0 and rec_h > 0) else 0.0
+
+            if daily_gain == 0.0 and trig_gain > 0:
+                daily_gain = trig_gain
+            if weekly_gain == 0.0 and trig_gain > 0:
+                weekly_gain = trig_gain
+            if monthly_gain == 0.0 and trig_gain > 0:
+                monthly_gain = trig_gain
+
+            item["daily_change_pct"] = daily_gain
+            item["weekly_change_pct"] = weekly_gain
+            item["monthly_change_pct"] = monthly_gain
+
+            # Calculate timeframe's positive percentage change
+            if today_only:
+                target_pct = daily_gain
+            elif past_week_only:
+                target_pct = weekly_gain
+            else:
+                tf_name = item.get("timeframe", "").upper()
+                if tf_name == "DAILY":
+                    target_pct = daily_gain
+                elif tf_name == "WEEKLY":
+                    target_pct = weekly_gain
+                elif tf_name == "MONTHLY":
+                    target_pct = monthly_gain
+                else:
+                    target_pct = monthly_gain or weekly_gain or daily_gain
+
+            item["positive_change_pct"] = target_pct
+
+            # Filter out non-positive growth candidates for the race
+            if target_pct <= 0:
+                continue
 
             filtered_items.append(item)
 
-        # Sort: if past_week_only, sort by weekly_change_pct desc, then alert_count desc
-        if past_week_only:
-            filtered_items.sort(key=lambda x: (x.get("weekly_change_pct", 0), x["alert_count"], x["rating"]), reverse=True)
-        else:
-            filtered_items.sort(key=lambda x: (x["alert_count"], x["rating"], x["recent_high"]), reverse=True)
+        # Sort strictly by positive percentage change descending
+        filtered_items.sort(key=lambda x: (x.get("positive_change_pct", 0), x.get("rating", 0), x.get("recent_high", 0)), reverse=True)
 
         # Assign race ranks
         for idx, item in enumerate(filtered_items, start=1):
