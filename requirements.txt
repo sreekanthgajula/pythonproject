@@ -1,24 +1,81 @@
-Act as an NSE derivatives analyst. 
+Here is the complete, self-contained prompt. You can copy and paste this directly into your Antigravity chat:
 
-Based on this data, give me a single directional bias (Bullish, Bearish, or Neutral), the expected day range, and key invalidation level.
+```markdown
+### Context & System Architecture
+You are working on an algorithmic stock tracking and trading project located at:
+`C:\Users\balup\OneDrive\Desktop\finalproject\TradingAgents-main`
 
-- Nifty Spot: [e.g., 24,850]
-- GIFT Nifty: [e.g., 24,920]
-- Put-Call Ratio (PCR): [e.g., 1.15]
-- India VIX: [e.g., 13.2]
-- Biggest Call Strike (Resistance): [e.g., 25,000]
-- Biggest Put Strike (Support): [e.g., 24,800]
-- Top Global/Domestic News: [Paste 2-3 lines of news]
+The project currently has:
+1. `kite_client.py`: Zerodha Kite Connect REST API and KiteTicker WebSocket client (supporting both real mode and mock simulation). Aggregates ticks into 10-minute candles with standard market offsets and emits an `engine.on_candle_closed` callback.
+2. `data_manager.py` & `db_setup.py`: MongoDB connection manager storing candles in `candles_10m` and rating tables (`monthly`, `weekly`, `daily`, `darvas`).
+3. `indicators.py`: Stateful, memory-efficient sliding-window `TickerState` computing True Strength Index (TSI) and On-Balance Volume (OBV) in O(1) time.
+4. `main.py`: Application entry point with CLI arguments (`--mock`, `--token`).
 
-Format output strictly as:
-1. Verdict: [Bullish / Bearish / Neutral]
-2. Key Reason: [1 sentence]
-3. Expected Range: [Support] to [Resistance]
-4. Bias Invalidated If Spot Breaks: [Strike Level]
+### Objective
+Implement a modular, automated multi-strategy paper trading system to run and evaluate **10 tried-and-tested, low-frequency strategies** side-by-side. Each strategy must run in its own isolated virtual sub-portfolio (e.g. ₹100,000 virtual cash each) so we can compare their performance (P&L, Win Rate, Profit Factor, Max Drawdown) without human intervention.
 
+---
 
-use grok and zerodha api to fetch data from the above format and give output 
+### Step 1: Create the Strategy Framework (`strategies/`)
 
+1. `strategies/base.py`:
+   - Define a dataclass `Signal` with fields: `strategy_id`, `action` ("BUY", "SELL", "CLOSE"), `instrument_token`, `price`, `timestamp`, `stop_loss`, `target_price`, `max_holding_bars`, `reason`, and `metadata`.
+   - Define an abstract class `BaseStrategy` with `__init__(strategy_id, name, description, params)` and abstract method `evaluate(candle: dict, rolling_df: pd.DataFrame, ticker_state) -> Optional[Signal]`.
 
+2. Implement 10 Low-Frequency Strategies:
+   - `strategies/darvas_box.py`: **Darvas Box Breakout** (considers 15-bar consolidation; buys breakout above box top with volume > 1.25x average; stop at box bottom; max hold 25 bars).
+   - `strategies/tsi_obv_trend.py`: **TSI & OBV Momentum** (buys when TSI crosses above zero and OBV is above its 9-period SMA; stop 1.5%, target 3.0%; max hold 18 bars).
+   - `strategies/rsi_pullback.py`: **Connors RSI Pullback** (buys when Close > 50-SMA and 2-period RSI < 15; exits on Close > 5-SMA or 8 bars; stop 2.0%).
+   - `strategies/ema_atr_trend.py`: **Dual EMA & ATR Trend** (buys on 20 EMA crossing above 50 EMA; volatility stop at 2.5x ATR; target at 2.0x risk; max hold 35 bars).
+   - `strategies/volume_breakout.py`: **Volume Surge Breakout** (buys when price closes at a 20-period high on volume > 1.8x average with a strong green candle; stop at 20-period low; max hold 20 bars).
+   - `strategies/bollinger_squeeze.py`: **Bollinger Volatility Squeeze** (detects band contraction to 20-bar low, enters on upper band breakout; stop at middle SMA; max hold 20 bars).
+   - `strategies/macd_zero_cross.py`: **MACD Zero-Line Trend** (buys when MACD line crosses above 0 line with histogram expanding; stop 1.8%, target 3.6%; max hold 25 bars).
+   - `strategies/donchian_breakout.py`: **Donchian Channel Turtle** (buys on 20-period high breakout; exits when price breaks below 10-period low or 30 bars).
+   - `strategies/stochastic_pullback.py`: **Stochastic Dip in Trend** (trend filter Close > 50-EMA; buys when %K crosses above %D from below 20; stop 1.5%; max hold 15 bars).
+   - `strategies/multi_timeframe.py`: **Multi-Timeframe Trend Confirmation** (ensures higher-timeframe 100-period baseline is bullish before entering 10-minute momentum pullbacks; max hold 25 bars).
 
+3. `strategies/registry.py`:
+   - Create `StrategyRegistry` to instantiate and manage all 10 strategies with easy enable/disable flags and access methods.
 
+---
+
+### Step 2: Create the Paper Trading Engine (`paper_trading/`)
+
+1. `paper_trading/portfolio.py`:
+   - Define `Position`: `strategy_id`, `instrument_token`, `entry_price`, `quantity`, `entry_time`, `stop_loss`, `target_price`, `max_holding_bars`, `bars_held`.
+   - Define `VirtualPortfolio`: Manages an isolated virtual balance (default ₹100,000) for one strategy. Tracks `cash`, active `positions`, and `closed_trades`. Calculates realized P&L, unrealized P&L, total equity, win rate, and profit factor.
+
+2. `paper_trading/engine.py`:
+   - Define `PaperTradingEngine(data_manager=None, initial_capital=100000.0)`:
+     - On every closed candle (`on_candle(candle, rolling_df, ticker_state)`):
+       1. **Position Monitoring**: For all open positions, increment `bars_held`. Check if `candle['low'] <= stop_loss` (Stop Loss hit), `candle['high'] >= target_price` (Target hit), or `bars_held >= max_holding_bars` (Time limit expired). Close position, compute realized P&L, and update portfolio cash.
+       2. **Signal Evaluation**: Dispatch candle to all enabled strategies. If a `BUY` signal is returned and the strategy does not already hold a position, calculate position size (e.g. 20% of strategy equity) and execute a virtual buy.
+     - Provide `get_performance_summary()` and `print_summary()`: Prints an ASCII leaderboard comparing all 10 strategies (Total Equity, Realized P&L, Win Rate %, Trades Executed, Open Positions).
+
+3. `paper_trading/persistence.py`:
+   - Optionally saves completed trades to MongoDB collection `paper_trades` and snapshot equity to `paper_portfolios` via `data_manager.db`.
+
+---
+
+### Step 3: Wire into `main.py`
+
+In `main.py`:
+1. Initialize `StrategyRegistry()` and `PaperTradingEngine(data_manager=data_manager)`.
+2. In `on_candle_closed_callback(candle_doc, rolling_df)`:
+   - Call `paper_engine.on_candle(candle_doc, rolling_df, state)`
+   - Call `paper_engine.print_summary()` every closed candle.
+3. In the `finally` block or `KeyboardInterrupt`:
+   - Print the final strategy leaderboard before exiting.
+
+---
+
+### Verification
+Once implemented, run `python main.py --mock` in the terminal to verify that mock candles stream, indicators warm up, all 10 strategies evaluate signals, and paper trades execute automatically.
+```
+
+---
+
+### Summary of What This Gives You
+* **Full Automation:** Zero manual intervention—each strategy detects triggers, enters trades, tracks stops, and exits automatically.
+* **Fair Sandbox:** All 10 strategies start with an equal virtual balance (₹100,000 each) in isolated ledgers.
+* **Clear Leaderboard:** At every 10-minute candle close, you get an instant scoreboard showing which strategies have a true mathematical edge and which ones don't.

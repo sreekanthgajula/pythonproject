@@ -167,6 +167,11 @@ const DerivativesSpeedometer = ({
           <div className="sentiment-score-badge">
             Score: <span className="score-val">{sentimentScore > 0 ? `+${sentimentScore}` : sentimentScore}</span> / 100
           </div>
+          {data.predicted_nifty_change && (
+            <div className="predicted-change-badge" style={{ marginTop: '0.35rem', fontSize: '0.82rem', fontWeight: 'bold' }}>
+              Predicted Move: <span style={{ color: data.predicted_nifty_change.includes('+') ? '#10b981' : data.predicted_nifty_change.includes('-') ? '#f43f5e' : '#f59e0b' }}>{data.predicted_nifty_change}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -180,6 +185,14 @@ const DerivativesSpeedometer = ({
           <span className="label">GIFT Nifty</span>
           <span className="val">{data.gift_nifty?.toLocaleString()}</span>
         </div>
+        {data.predicted_nifty_change && (
+          <div className="metric-pill">
+            <span className="label">Predicted % Change</span>
+            <span className={`val ${data.predicted_nifty_change.includes('+') ? 'text-success' : data.predicted_nifty_change.includes('-') ? 'text-danger' : ''}`}>
+              {data.predicted_nifty_change}
+            </span>
+          </div>
+        )}
         <div className="metric-pill">
           <span className="label">Put-Call Ratio (PCR)</span>
           <span className="val">{data.pcr}</span>

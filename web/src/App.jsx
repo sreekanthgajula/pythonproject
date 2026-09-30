@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import StockAlertRaceChart from './components/StockAlertRaceChart';
 import DerivativesSpeedometer from './components/DerivativesSpeedometer';
+import StrategyPerformanceDashboard from './components/StrategyPerformanceDashboard';
 
 const API_BASE_URL = '/api';
 
@@ -107,7 +108,7 @@ export default function App() {
 
   // Fetch stocks data for the active timeframe
   const fetchTimeframeRatings = async (timeframe) => {
-    if (timeframe === 'race' || timeframe === 'todays_race') return;
+    if (timeframe === 'race' || timeframe === 'todays_race' || timeframe === 'strategies') return;
     if (timeframe === 'active_gtts' || timeframe === 'gtts') {
       fetchZerodhaGtts();
       return;
@@ -976,7 +977,7 @@ export default function App() {
             <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.active_gtts || 0}</span>
           </button>
 
-          {/* 🏎️ TAB 5: STOCK ALERT RACE (Features Today's Race / Past Week Gainers / All-Time Mode Switcher) */}
+          {/* 🏎️ TAB 5: STOCK ALERT RACE */}
           <button
             className={`tab-btn ${activeTab === 'race' || activeTab === 'todays_race' || activeTab === 'past_week_race' ? 'active' : ''}`}
             onClick={() => setActiveTab('todays_race')}
@@ -986,10 +987,20 @@ export default function App() {
             <span>🏎️ Stock Alert Race</span>
             <span className="tab-badge" style={{ background: '#f59e0b', color: '#fff' }}>{tabCounts.todays_race || tabCounts.race || 0}</span>
           </button>
+
+          {/* 🤖 TAB 6: STRATEGY PERFORMANCE & PAPER TRADING DASHBOARD */}
+          <button
+            className={`tab-btn ${activeTab === 'strategies' ? 'active' : ''}`}
+            onClick={() => setActiveTab('strategies')}
+            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
+          >
+            <Zap size={16} color="#38bdf8" />
+            <span>🤖 Strategies & Leaderboard</span>
+          </button>
         </nav>
 
-        {/* Quick Sorting Pills & Delete All Button (Hidden on Active GTTS & Race tabs) */}
-        {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && (
+        {/* Quick Sorting Pills & Delete All Button (Hidden on Active GTTS, Race & Strategies tabs) */}
+        {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'strategies' && (
           <div className="sort-controls">
             {activeTab === 'manual' && (
               <button
@@ -1106,7 +1117,7 @@ export default function App() {
           </div>
         )}
 
-        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && (
+        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'strategies' && (
           <div className="search-box">
             <Search className="search-icon" size={16} />
             <input
@@ -1120,7 +1131,10 @@ export default function App() {
         )}
       </div>
 
-      {activeTab === 'todays_race' ? (
+      {activeTab === 'strategies' ? (
+        /* 🤖 STRATEGY PERFORMANCE & PAPER TRADING DASHBOARD VIEW */
+        <StrategyPerformanceDashboard />
+      ) : activeTab === 'todays_race' ? (
         /* 🏎️ TODAY'S STOCK ALERT RACE VIEW (Current Day Only) */
         <StockAlertRaceChart todayOnly={true} pastWeekOnly={false} />
       ) : activeTab === 'past_week_race' ? (

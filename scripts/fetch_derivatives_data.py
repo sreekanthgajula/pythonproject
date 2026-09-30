@@ -236,7 +236,7 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
     elif force_grok and grok_key:
         prompt_text = f"""Act as an NSE derivatives analyst. 
 
-Based on this data, give me a single directional bias (Bullish, Bearish, or Neutral), the expected day range, and key invalidation level.
+Based on this data, analyze market sentiment, determine market regime (Bullish Market, Bearish Market, or Neutral Market), predict the expected percentage change for Nifty 50 spot (% change), expected day range, and key invalidation level.
 
 - Nifty Spot: {nifty_spot:,.2f}
 - GIFT Nifty: {gift_nifty:,.2f}
@@ -247,10 +247,11 @@ Based on this data, give me a single directional bias (Bullish, Bearish, or Neut
 - Top Global/Domestic News: {news_summary}
 
 Format output strictly as:
-1. Verdict: [{simple_verdict}]
-2. Key Reason: [1 sentence]
-3. Expected Range: [Support] to [Resistance]
-4. Bias Invalidated If Spot Breaks: [Strike Level]
+1. Verdict: [{simple_verdict}] (Bull / Bear / Neutral Market)
+2. Predicted Nifty % Change: [Predict explicit % change e.g., +0.55% or -0.40%]
+3. Key Reason: [1 sentence analyzing market sentiment and key drivers]
+4. Expected Range: [Support] to [Resistance]
+5. Bias Invalidated If Spot Breaks: [Strike Level]
 """
         try:
             print("[DERIVATIVES] Querying Grok AI for updated news & derivatives analysis...")
@@ -262,7 +263,7 @@ Format output strictly as:
             payload = {
                 "model": selected_model,
                 "messages": [
-                    {"role": "system", "content": "You are a professional NSE derivatives analyst specializing in Nifty option chain, PCR, VIX, and market structure analysis."},
+                    {"role": "system", "content": "You are a professional NSE derivatives analyst specializing in Nifty option chain, PCR, VIX, sentiment analysis, and predicting short-term Nifty price movement percentage."},
                     {"role": "user", "content": prompt_text}
                 ],
                 "temperature": 0.2
@@ -282,14 +283,26 @@ Format output strictly as:
 
     if not analysis_output:
         # Fast Deterministic Fallback Analysis if Grok API key is unavailable or Grok not manually requested
+        gift_basis_pct = round(((gift_nifty - nifty_spot) / nifty_spot * 100.0), 2) if nifty_spot > 0 else 0.0
+        predicted_pct_str = f"+{gift_basis_pct:.2f}%" if gift_basis_pct > 0 else f"{gift_basis_pct:.2f}%"
         reason = f"Strong Put writing at {max_put_strike:,} and positive PCR of {pcr} indicate underlying support despite resistance at {max_call_strike:,}."
         exp_range = f"{max_put_strike:,} to {max_call_strike:,}"
         invalidation = f"{max_put_strike:,}" if simple_verdict == "Bull Day" else f"{max_call_strike:,}"
         
-        analysis_output = f"""1. Verdict: {simple_verdict}
-2. Key Reason: {reason}
-3. Expected Range: {exp_range}
-4. Bias Invalidated If Spot Breaks: {invalidation}"""
+        analysis_output = f"""1. Verdict: {simple_verdict} (Market Regime)
+2. Predicted Nifty % Change: {predicted_pct_str}
+3. Key Reason: {reason}
+4. Expected Range: {exp_range}
+5. Bias Invalidated If Spot Breaks: {invalidation}"""
+
+    import re
+    predicted_nifty_change = ""
+    match = re.search(r"Predicted Nifty % Change:\s*([+\-]?\d+(?:\.\d+)?%?)", analysis_output, re.IGNORECASE)
+    if match:
+        predicted_nifty_change = match.group(1).strip()
+    elif nifty_spot > 0 and gift_nifty > 0:
+        gift_basis_pct = round(((gift_nifty - nifty_spot) / nifty_spot * 100.0), 2)
+        predicted_nifty_change = f"+{gift_basis_pct:.2f}%" if gift_basis_pct > 0 else f"{gift_basis_pct:.2f}%"
 
     res = {
         "status": "success",
@@ -305,6 +318,7 @@ Format output strictly as:
         "day_verdict": day_verdict,
         "verdict": simple_verdict,
         "news_summary": news_summary,
+        "predicted_nifty_change": predicted_nifty_change,
         "analysis_output": analysis_output,
         "used_grok": used_grok,
         "grok_cached": grok_cached,

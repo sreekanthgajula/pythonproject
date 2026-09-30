@@ -1387,8 +1387,99 @@ def sync_zerodha_gtts_endpoint():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to sync Zerodha GTTs: {e}")
 
-if __name__ == "__main__":
 
+# =====================================================================
+# Strategy & Paper Trading Endpoints
+# =====================================================================
+
+global_paper_engine = None
+
+def get_paper_engine():
+    global global_paper_engine
+    if global_paper_engine is None:
+        try:
+            from data_manager import DataManager
+            from paper_trading import PaperTradingEngine
+            dm = DataManager()
+            global_paper_engine = PaperTradingEngine(data_manager=dm)
+        except Exception as e:
+            print(f"Failed to initialize PaperTradingEngine in server: {e}")
+    return global_paper_engine
+
+@app.get("/api/paper/strategies")
+def get_paper_strategies():
+    """
+    Returns performance metrics and configuration for all 10 automated strategies.
+    Combines live memory state with MongoDB persistence.
+    """
+    try:
+        from data_manager import DataManager
+        from strategies.registry import StrategyRegistry
+        dm = DataManager()
+        reg = StrategyRegistry(data_manager=dm)
+        strats = reg.get_all_strategies()
+        
+        # Query MongoDB paper_portfolios snapshots
+        portfolios_col = dm.db["paper_portfolios"]
+        db_snapshots = {doc["strategy_id"]: doc for doc in portfolios_col.find({}, {"_id": 0})}
+        
+        res = []
+        for s in strats:
+            snap = db_snapshots.get(s.strategy_id, {})
+            res.append({
+                "strategy_id": s.strategy_id,
+                "name": s.name,
+                "description": s.description,
+                "enabled": s.enabled,
+                "params": s.params,
+                "initial_capital": snap.get("initial_capital", 100000.0),
+                "total_equity": snap.get("total_equity", 100000.0),
+                "realized_pnl": snap.get("realized_pnl", 0.0),
+                "unrealized_pnl": snap.get("unrealized_pnl", 0.0),
+                "win_rate": snap.get("win_rate", 0.0),
+                "profit_factor": snap.get("profit_factor", 1.0),
+                "open_positions_count": snap.get("open_positions_count", 0),
+                "total_trades_count": snap.get("total_trades_count", 0),
+                "updated_at": snap.get("updated_at")
+            })
+        return {"status": "success", "strategies": res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch paper strategies: {e}")
+
+@app.get("/api/paper/trades")
+def get_paper_trades(strategy_id: Optional[str] = None):
+    """
+    Retrieves completed paper trades (profit/loss details, entry/exit prices, reasons) from MongoDB.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        trades_col = dm.db["paper_trades"]
+        query = {}
+        if strategy_id and strategy_id.lower() != "all":
+            query["strategy_id"] = strategy_id
+        cursor = trades_col.find(query, {"_id": 0}).sort("exit_time", -1).limit(200)
+        trades = list(cursor)
+        return {"status": "success", "count": len(trades), "trades": trades}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch paper trades: {e}")
+
+@app.post("/api/paper/toggle-strategy")
+def toggle_paper_strategy(payload: dict):
+    """Enables or disables a specific strategy in the registry."""
+    strategy_id = payload.get("strategy_id")
+    enabled = payload.get("enabled", True)
+    try:
+        engine = get_paper_engine()
+        if engine:
+            ok = engine.registry.set_strategy_enabled(strategy_id, enabled)
+            return {"status": "success", "strategy_id": strategy_id, "enabled": enabled}
+        raise HTTPException(status_code=400, detail="PaperTradingEngine not ready")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to toggle strategy: {e}")
+
+if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)
+
 
