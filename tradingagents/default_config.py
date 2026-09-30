@@ -103,10 +103,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {
-        "core_stock_apis": "zerodha" if os.environ.get("ZERODHA_API_KEY") else "yfinance",       # Options: alpha_vantage, yfinance, zerodha
-        "technical_indicators": "zerodha" if os.environ.get("ZERODHA_API_KEY") else "yfinance",  # Options: alpha_vantage, yfinance, zerodha
-        "fundamental_data": "yfinance",      # Options: alpha_vantage, yfinance
-        "news_data": "yfinance",             # Options: alpha_vantage, yfinance
+        "core_stock_apis": "zerodha",         # Options: alpha_vantage, yfinance, zerodha
+        "technical_indicators": "zerodha",    # Options: alpha_vantage, yfinance, zerodha
+        "fundamental_data": "zerodha",        # Options: alpha_vantage, yfinance, zerodha
+        "news_data": "zerodha",               # Options: alpha_vantage, yfinance, zerodha
     },
     # Tool-level configuration (takes precedence over category-level)
     "tool_vendors": {

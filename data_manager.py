@@ -239,6 +239,23 @@ class DataManager:
             query["symbol"] = symbol.strip().upper()
 
         records = list(col.find(query, {"_id": 0}))
+
+        if clean_table == "darvas":
+            def _darvas_score(r):
+                score = r.get("darvas_pillar_score")
+                if score is None:
+                    score = r.get("darvas_score")
+                if score is not None:
+                    try:
+                        return float(score)
+                    except (ValueError, TypeError):
+                        pass
+                cs = float(r.get("close_strength_pct") or 0.0)
+                vr = float(r.get("volume_surge_ratio") or 0.0)
+                return cs * vr
+
+            records.sort(key=_darvas_score, reverse=True)
+
         return records
 
     def delete_stock_rating(self, table_name: str, symbol: str) -> bool:

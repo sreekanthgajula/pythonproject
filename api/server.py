@@ -1150,9 +1150,12 @@ def trigger_darvas_box_scan():
         raise HTTPException(status_code=500, detail=f"Failed to execute Darvas Box scan: {e}")
 
 
+_last_darvas_purge_time = 0.0
+
 @app.get("/api/ratings/{timeframe}")
 def get_stock_ratings(timeframe: str, background_tasks: BackgroundTasks):
     """Retrieve Grok-evaluated high-conviction stocks and 1% trigger prices for a timeframe ('monthly', 'weekly', 'daily', 'manual', 'darvas')."""
+    global _last_darvas_purge_time
     tf_clean = timeframe.strip().lower()
     if tf_clean not in ("monthly", "weekly", "daily", "manual", "darvas"):
         raise HTTPException(status_code=400, detail="Timeframe must be 'monthly', 'weekly', 'daily', 'manual', or 'darvas'")
@@ -1161,13 +1164,16 @@ def get_stock_ratings(timeframe: str, background_tasks: BackgroundTasks):
         from data_manager import DataManager
         dm = DataManager()
 
-        # Run Darvas purge audit asynchronously in background to ensure 0ms instant tab loading
+        # Throttle background Darvas purge to at most once every 10 minutes (600s)
         if tf_clean == "darvas":
-            try:
-                from scripts.darvas_box_scanner import purge_invalidated_darvas_stocks
-                background_tasks.add_task(purge_invalidated_darvas_stocks)
-            except Exception as purge_err:
-                print(f"[DARVAS-PURGE] Warning: Failed to schedule background Darvas purge: {purge_err}")
+            now_ts = time.time()
+            if now_ts - _last_darvas_purge_time > 600:
+                _last_darvas_purge_time = now_ts
+                try:
+                    from scripts.darvas_box_scanner import purge_invalidated_darvas_stocks
+                    background_tasks.add_task(purge_invalidated_darvas_stocks)
+                except Exception as purge_err:
+                    print(f"[DARVAS-PURGE] Warning: Failed to schedule background Darvas purge: {purge_err}")
 
         records = dm.get_stock_ratings(tf_clean)
         # Format datetimes to ISO strings for JSON serialization
@@ -1323,15 +1329,10 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
                     is_today = (date_str == today_date_str)
                     has_triggered = (alert_cnt > 0) or ("TRIGGER" in str(alert_status).upper())
 
-                    # STRICT FILTERING for Today's Race:
-                    if today_only:
-                        if not (is_today and has_triggered):
-                            continue
-                    
                     today_alerts = int(doc.get("today_alert_count") or (alert_cnt if is_today else 0))
                     active_alerts_count = today_alerts if today_only else alert_cnt
 
-                    if sym not in stocks_map or active_alerts_count > stocks_map[sym]["alert_count"]:
+                    if sym not in stocks_map:
                         stocks_map[sym] = {
                             "symbol": sym,
                             "timeframe": tf.upper(),

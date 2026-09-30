@@ -45,8 +45,31 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_historical_daily_data(symbol: str, period: str = "2y") -> pd.DataFrame:
-    """Fetches 1-2 years of daily OHLCV historical data for a given ticker."""
-    clean_sym = symbol.strip().upper()
+    """Fetches 1-2 years of daily OHLCV historical data for a given ticker, prioritizing Zerodha."""
+    clean_sym = symbol.strip().upper().replace(".NS", "").replace("-EQ", "")
+
+    # 1. Try Zerodha API first
+    try:
+        from tradingagents.dataflows.zerodha import get_zerodha_stock_df
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=730)  # 2 years
+        start_str = start_dt.strftime("%Y-%m-%d")
+        end_str = end_dt.strftime("%Y-%m-%d")
+
+        df_z = get_zerodha_stock_df(clean_sym, start_str, end_str, interval="day")
+        if df_z is not None and not df_z.empty:
+            df_z = df_z.rename(columns={
+                "Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"
+            })
+            if {"open", "high", "low", "close", "volume"}.issubset(df_z.columns):
+                res_df = df_z[["open", "high", "low", "close", "volume"]].dropna()
+                if len(res_df) >= 50:
+                    logger.info(f"✅ Fetched {len(res_df)} daily candles for {clean_sym} via Zerodha API.")
+                    return res_df
+    except Exception as e:
+        logger.warning(f"Zerodha data fetch for {clean_sym} failed/unavailable ({e}), falling back to yfinance.")
+
+    # 2. Fallback to yfinance if Zerodha fails or is unconfigured
     yf_symbol = normalize_symbol(clean_sym)
     if not yf_symbol.endswith(".NS") and "=" not in yf_symbol and "-" not in yf_symbol:
         yf_symbol = f"{yf_symbol}.NS"
@@ -198,32 +221,40 @@ def analyze_darvas_box_breakout(symbol: str, df: pd.DataFrame = None) -> dict:
         not is_invalidated
     )
 
-    # Build clear analytical summary
+    # 4-Pillar Comprehensive Darvas Box Ranking Score Calculation:
+    # Pillar 1: Trend & 52-Week High Proximity
+    prox_factor = round(curr_close / high_52w, 4) if (high_52w and high_52w > 0) else 1.0
+    proximity_pct = round(prox_factor * 100.0, 1)
+    trend_bonus = 1.10 if trend_aligned else 1.00
+
+    # Pillar 2: Box Tightness & Consolidation Quality (Tighter box % = Higher explosive potential)
+    box_height_pct = round(((box_top - box_bottom) / box_top) * 100.0, 2) if (box_top and box_top > 0) else 10.0
+    tightness_factor = round(1.0 + max(0.0, (15.0 - min(15.0, box_height_pct)) / 50.0), 4)
+
+    # Pillar 3: Volume Surge Ratio
+    vr_ratio = vol_ratio or 1.0
+
+    # Pillar 4: Close Strength %
+    cs_pct = close_strength_pct or 0.0
+
+    # Composite 4-Pillar Darvas Score
+    darvas_pillar_score = round(cs_pct * vr_ratio * prox_factor * trend_bonus * tightness_factor, 2)
+
+    # Build clear analytical 4-Pillar summary
     reasons = []
-    if within_15pct_52w:
-        reasons.append(f"Near 52w High (RS {high_52w:.2f})")
-    else:
-        reasons.append(f"Below 15% 52w High boundary (RS {high_52w:.2f})")
-
-    if trend_aligned:
-        reasons.append(f"Trend Aligned (Close RS {curr_close:.2f} > SMA50 RS {sma50:.2f} > SMA200 RS {sma200:.2f})")
-    else:
-        reasons.append(f"Trend unaligned (SMA50: RS {sma50:.2f}, SMA200: RS {sma200:.2f})")
-
+    p1_str = f"1️⃣ Trend & 52W High: {proximity_pct:.1f}% of 52w High ({high_52w:.2f})" + (" (Bullish SMA50>200)" if trend_aligned else " (Trend Lag)")
+    p2_str = f"2️⃣ Box Structure: [{box_bottom:.2f} - {box_top:.2f}] Range ({box_height_pct:.1f}% Tightness)" if box_bottom else f"2️⃣ Box Top: {box_top:.2f}"
+    p3_str = f"3️⃣ Vol Expansion: {vol_ratio:.1f}x 20d Avg Vol"
+    p4_str = f"4️⃣ Closing Power: {close_strength_pct:.1f}% Daily Range Close"
+    
+    reasons.extend([p1_str, p2_str, p3_str, p4_str])
+    
     if price_breakout:
         reasons.append(f"🚀 ACTIVE BREAKOUT above Box Top RS {box_top:.2f} (Close: RS {curr_close:.2f})")
     elif holds_box_bottom:
-        reasons.append(f"📦 FORMING BOX [RS {box_bottom:.2f} - RS {box_top:.2f}] (Close: RS {curr_close:.2f})")
+        reasons.append(f"📦 FORMING BOX [RS {box_bottom:.2f} - RS {box_top:.2f}]")
     else:
         reasons.append(f"❌ BROKE BELOW Box Bottom RS {box_bottom:.2f}")
-
-    if volume_surge:
-        reasons.append(f"Volume Surge {vol_ratio:.1f}x 20d Avg")
-    else:
-        reasons.append(f"Volume ratio {vol_ratio:.1f}x 20d Avg")
-
-    if close_strong:
-        reasons.append(f"Strong Close at {close_strength_pct:.1f}% of daily range")
 
     if is_invalidated:
         reasons.append("⚠️ SETUP INVALIDATED")
@@ -236,8 +267,12 @@ def analyze_darvas_box_breakout(symbol: str, df: pd.DataFrame = None) -> dict:
         "close_price": round(curr_close, 2),
         "box_top": round(box_top, 2) if box_top else 0.0,
         "box_bottom": round(box_bottom, 2) if box_bottom else 0.0,
+        "box_height_pct": box_height_pct,
         "volume_surge_ratio": vol_ratio,
         "close_strength_pct": close_strength_pct,
+        "proximity_pct": proximity_pct,
+        "darvas_pillar_score": darvas_pillar_score,
+        "darvas_score": darvas_pillar_score,
         "sma50": round(sma50, 2),
         "sma200": round(sma200, 2),
         "fifty_two_week_high": round(high_52w, 2),
@@ -282,9 +317,13 @@ def scan_and_save_darvas_stock(symbol: str, timeframe: str = "daily") -> dict:
                 "recent_high": analysis.get("box_top"),
                 "box_top": analysis.get("box_top"),
                 "box_bottom": analysis.get("box_bottom"),
+                "box_height_pct": analysis.get("box_height_pct"),
+                "proximity_pct": analysis.get("proximity_pct"),
                 "alert_trigger_price": round(analysis.get("box_top") * 1.01, 2),
                 "volume_surge_ratio": analysis.get("volume_surge_ratio"),
                 "close_strength_pct": analysis.get("close_strength_pct"),
+                "darvas_pillar_score": analysis.get("darvas_pillar_score"),
+                "darvas_score": analysis.get("darvas_pillar_score"),
                 "sma50": analysis.get("sma50"),
                 "sma200": analysis.get("sma200"),
                 "fifty_two_week_high": analysis.get("fifty_two_week_high"),

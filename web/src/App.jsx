@@ -106,31 +106,61 @@ export default function App() {
   const [sortKey, setSortKey] = useState('rating'); // 'rating' | 'updated_at' | 'alert_count' | 'symbol' | 'recent_high' | 'alert_trigger_price'
   const [sortOrder, setSortOrder] = useState('desc'); // 'desc' | 'asc'
 
+  const isStocksListEqual = (prev = [], next = []) => {
+    if (prev === next) return true;
+    if (!prev || !next || prev.length !== next.length) return false;
+    for (let i = 0; i < prev.length; i++) {
+      const a = prev[i];
+      const b = next[i];
+      if (
+        a.symbol !== b.symbol ||
+        a.rating !== b.rating ||
+        a.box_top !== b.box_top ||
+        a.box_bottom !== b.box_bottom ||
+        a.recent_high !== b.recent_high ||
+        a.alert_trigger_price !== b.alert_trigger_price ||
+        a.alert_status !== b.alert_status ||
+        a.alert_count !== b.alert_count ||
+        a.close_strength_pct !== b.close_strength_pct ||
+        a.volume_surge_ratio !== b.volume_surge_ratio ||
+        a.darvas_pillar_score !== b.darvas_pillar_score ||
+        a.darvas_score !== b.darvas_score
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   // Fetch stocks data for the active timeframe
-  const fetchTimeframeRatings = async (timeframe) => {
+  const fetchTimeframeRatings = async (timeframe, isBackground = false) => {
     if (timeframe === 'race' || timeframe === 'todays_race' || timeframe === 'strategies') return;
     if (timeframe === 'active_gtts' || timeframe === 'gtts') {
-      fetchZerodhaGtts();
+      fetchZerodhaGtts(isBackground);
       return;
     }
-    setLoading(true);
+    if (!isBackground) setLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/ratings/${timeframe}`);
       if (res.ok) {
         const json = await res.json();
-        setStocksData(json.data || []);
-        setTabCounts(prev => ({ ...prev, [timeframe]: json.count || 0 }));
+        const newData = json.data || [];
+        setStocksData(prev => (isStocksListEqual(prev, newData) ? prev : newData));
+        setTabCounts(prev => {
+          const newCount = json.count || 0;
+          return prev[timeframe] === newCount ? prev : { ...prev, [timeframe]: newCount };
+        });
       }
     } catch (err) {
       console.error(`Error fetching ${timeframe} ratings:`, err);
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   };
 
   // Fetch all active & triggered GTT alerts (Zerodha GTTs + DB triggered alerts)
-  const fetchZerodhaGtts = async () => {
-    setLoading(true);
+  const fetchZerodhaGtts = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     try {
       let combinedGtts = [];
       const seenSymbols = new Set();
@@ -180,15 +210,12 @@ export default function App() {
       }
 
       const activeOnlyCount = combinedGtts.filter(g => (g.status || '').toUpperCase().includes('ACTIVE')).length;
-      setGttsData(combinedGtts);
-      setTabCounts(prev => ({
-        ...prev,
-        active_gtts: activeOnlyCount
-      }));
+      setGttsData(prev => (JSON.stringify(prev) === JSON.stringify(combinedGtts) ? prev : combinedGtts));
+      setTabCounts(prev => (prev.active_gtts === activeOnlyCount ? prev : { ...prev, active_gtts: activeOnlyCount }));
     } catch (err) {
       console.error('Error fetching GTTs:', err);
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   };
 
@@ -230,12 +257,14 @@ export default function App() {
 
   // Fetch counts for all timeframes for tab badges
   const fetchAllTabCounts = async () => {
+    const newCounts = {};
+
     for (const tf of ['monthly', 'weekly', 'daily', 'manual', 'darvas']) {
       try {
         const res = await fetch(`${API_BASE_URL}/ratings/${tf}`);
         if (res.ok) {
           const json = await res.json();
-          setTabCounts(prev => ({ ...prev, [tf]: json.count || 0 }));
+          newCounts[tf] = json.count || 0;
         }
       } catch (err) {
         console.error(`Error fetching tab count for ${tf}:`, err);
@@ -273,7 +302,7 @@ export default function App() {
         } catch (e) {}
       }
 
-      setTabCounts(prev => ({ ...prev, active_gtts: gttCount }));
+      newCounts.active_gtts = gttCount;
     } catch (err) {
       console.error('Error fetching GTT count:', err);
     }
@@ -282,7 +311,7 @@ export default function App() {
       const todaysRaceRes = await fetch(`${API_BASE_URL}/race/daily?today_only=true`);
       if (todaysRaceRes.ok) {
         const json = await todaysRaceRes.json();
-        setTabCounts(prev => ({ ...prev, todays_race: json.count || 0 }));
+        newCounts.todays_race = json.count || 0;
       }
     } catch (err) {
       console.error('Error fetching todays_race tab count:', err);
@@ -292,7 +321,7 @@ export default function App() {
       const pastWeekRaceRes = await fetch(`${API_BASE_URL}/race/daily?past_week_only=true`);
       if (pastWeekRaceRes.ok) {
         const json = await pastWeekRaceRes.json();
-        setTabCounts(prev => ({ ...prev, past_week_race: json.count || 0 }));
+        newCounts.past_week_race = json.count || 0;
       }
     } catch (err) {
       console.error('Error fetching past_week_race tab count:', err);
@@ -302,11 +331,22 @@ export default function App() {
       const raceRes = await fetch(`${API_BASE_URL}/race/daily?today_only=false`);
       if (raceRes.ok) {
         const json = await raceRes.json();
-        setTabCounts(prev => ({ ...prev, race: json.count || 0 }));
+        newCounts.race = json.count || 0;
       }
     } catch (err) {
       console.error('Error fetching race tab count:', err);
     }
+
+    setTabCounts(prev => {
+      let changed = false;
+      for (const k of Object.keys(newCounts)) {
+        if (prev[k] !== newCounts[k]) {
+          changed = true;
+          break;
+        }
+      }
+      return changed ? { ...prev, ...newCounts } : prev;
+    });
   };
 
   // Fetch WebSocket live status
@@ -380,6 +420,10 @@ export default function App() {
 
   useEffect(() => {
     setSelectedSymbols([]);
+    if (activeTab === 'darvas') {
+      setSortKey('darvas_score');
+      setSortOrder('desc');
+    }
     fetchTimeframeRatings(activeTab);
     fetchAllTabCounts();
     fetchWsStatus();
@@ -388,7 +432,7 @@ export default function App() {
 
     // Fast status auto refresh every 10 seconds
     const intervalId = setInterval(() => {
-      fetchTimeframeRatings(activeTab);
+      fetchTimeframeRatings(activeTab, true);
       fetchAllTabCounts();
       fetchWsStatus();
       fetchZerodhaStatus();
@@ -662,37 +706,43 @@ export default function App() {
       return sym.toLowerCase().includes(query) || reason.toLowerCase().includes(query);
     })
     .sort((a, b) => {
-      let valA = a[sortKey];
-      let valB = b[sortKey];
+      let keyToUse = sortKey;
+      if (activeTab === 'darvas' && (keyToUse === 'rating' || keyToUse === 'close_strength_pct' || keyToUse === 'darvas_pillar_score')) {
+        keyToUse = 'darvas_score';
+      }
 
-      if (sortKey === 'rating') {
+      let valA = a[keyToUse];
+      let valB = b[keyToUse];
+
+      if (keyToUse === 'darvas_score' || keyToUse === 'darvas_pillar_score') {
+        valA = a.darvas_pillar_score ?? a.darvas_score ?? ((a.close_strength_pct || 0) * (a.volume_surge_ratio || 0));
+        valB = b.darvas_pillar_score ?? b.darvas_score ?? ((b.close_strength_pct || 0) * (b.volume_surge_ratio || 0));
+      } else if (keyToUse === 'rating') {
         valA = a.rating || 0;
         valB = b.rating || 0;
-      } else if (sortKey === 'close_strength_pct') {
+      } else if (keyToUse === 'close_strength_pct') {
         valA = a.close_strength_pct || 0;
         valB = b.close_strength_pct || 0;
-      } else if (sortKey === 'updated_at') {
+      } else if (keyToUse === 'updated_at') {
         valA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
         valB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
-      } else if (sortKey === 'alert_count') {
+      } else if (keyToUse === 'alert_count') {
         valA = a.alert_count || 0;
         valB = b.alert_count || 0;
-      } else if (sortKey === 'recent_high') {
+      } else if (keyToUse === 'recent_high') {
         valA = a.recent_high || 0;
         valB = b.recent_high || 0;
-      } else if (sortKey === 'alert_trigger_price') {
+      } else if (keyToUse === 'alert_trigger_price') {
         valA = a.alert_trigger_price || 0;
         valB = b.alert_trigger_price || 0;
-      } else if (sortKey === 'symbol') {
+      } else if (keyToUse === 'symbol') {
         valA = (a.symbol || '').toLowerCase();
         valB = (b.symbol || '').toLowerCase();
         return sortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       }
 
       if (valA === valB) {
-        const timeA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
-        const timeB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
-        return timeB - timeA;
+        return (a.symbol || '').localeCompare(b.symbol || '');
       }
 
       return sortOrder === 'asc' ? valA - valB : valB - valA;
@@ -1028,11 +1078,12 @@ export default function App() {
 
             {activeTab === 'darvas' && (
               <button
-                className={`sort-pill ${sortKey === 'close_strength_pct' ? 'active' : ''}`}
-                onClick={() => handleSort('close_strength_pct')}
+                className={`sort-pill ${sortKey === 'darvas_score' || sortKey === 'darvas_pillar_score' || sortKey === 'close_strength_pct' || sortKey === 'rating' ? 'active' : ''}`}
+                onClick={() => handleSort('darvas_score')}
+                title="Sort stocks by the 4 Complete Pillars of a True Darvas Box Setup (Best setups at top descending)"
               >
                 <Zap size={13} color="#fbbf24" />
-                <span>Close Strength {sortKey === 'close_strength_pct' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+                <span>⚡ 4-Pillar Darvas Score {(sortKey === 'darvas_score' || sortKey === 'darvas_pillar_score' || sortKey === 'close_strength_pct' || sortKey === 'rating') ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
               </button>
             )}
 
@@ -1293,10 +1344,10 @@ export default function App() {
                   </th>
 
                   {activeTab === 'darvas' && (
-                    <th className="sortable-th" onClick={() => handleSort('close_strength_pct')}>
+                    <th className="sortable-th" onClick={() => handleSort('darvas_score')}>
                       <div className="th-content">
-                        <span>Close Strength %</span>
-                        {renderSortIcon('close_strength_pct')}
+                        <span>⚡ 4-Pillar Score</span>
+                        {renderSortIcon(sortKey === 'rating' || sortKey === 'close_strength_pct' ? 'darvas_score' : sortKey)}
                       </div>
                     </th>
                   )}
@@ -1383,7 +1434,7 @@ export default function App() {
                     const isSelected = selectedSymbols.includes(item.symbol);
 
                     return (
-                      <tr key={item._id || item.symbol || idx} className={isSelected ? 'row-selected' : ''}>
+                      <tr key={item.symbol ? `stock-${item.symbol}` : idx} className={isSelected ? 'row-selected' : ''}>
                         {/* Select Checkbox */}
                         <td style={{ textAlign: 'center' }}>
                           <input
@@ -1415,53 +1466,69 @@ export default function App() {
                           </div>
                         </td>
 
-                        {/* Close Strength % (Darvas Tab) */}
-                        {activeTab === 'darvas' && (
-                          <td>
-                            <div className="close-strength-pill" style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              background: (item.close_strength_pct || 0) >= 75 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(107, 114, 128, 0.2)',
-                              color: (item.close_strength_pct || 0) >= 75 ? '#fbbf24' : '#9ca3af',
-                              border: (item.close_strength_pct || 0) >= 75 ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid rgba(107, 114, 128, 0.4)',
-                              borderRadius: '6px',
-                              padding: '4px 8px',
-                              fontSize: '0.82rem',
-                              fontWeight: 600
-                            }}>
-                              <Zap size={13} color={(item.close_strength_pct || 0) >= 75 ? '#fbbf24' : '#9ca3af'} />
-                              <span>{(item.close_strength_pct || 0).toFixed(1)}%</span>
-                            </div>
-                          </td>
-                        )}
+                        {/* ⚡ 4-Pillar Darvas Score Cell (Darvas Tab) */}
+                        {activeTab === 'darvas' && (() => {
+                          const score = item.darvas_pillar_score ?? item.darvas_score ?? ((item.close_strength_pct || 0) * (item.volume_surge_ratio || 0));
+                          const cs = item.close_strength_pct || 0;
+                          const vr = item.volume_surge_ratio || 0;
+                          const prox = item.proximity_pct || 90;
+                          const boxH = item.box_height_pct || 10;
+                          const isTopTier = score >= 150;
+                          return (
+                            <td>
+                              <div className="close-strength-pill" style={{
+                                display: 'inline-flex',
+                                flexDirection: 'column',
+                                alignItems: 'flex-start',
+                                gap: '3px',
+                                background: isTopTier ? 'rgba(16, 185, 129, 0.25)' : score >= 100 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(107, 114, 128, 0.2)',
+                                color: isTopTier ? '#34d399' : score >= 100 ? '#fbbf24' : '#9ca3af',
+                                border: isTopTier ? '1px solid rgba(16, 185, 129, 0.5)' : score >= 100 ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid rgba(107, 114, 128, 0.4)',
+                                borderRadius: '6px',
+                                padding: '5px 9px',
+                                fontSize: '0.85rem',
+                                fontWeight: 700
+                              }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <Zap size={14} color={isTopTier ? '#34d399' : score >= 100 ? '#fbbf24' : '#9ca3af'} />
+                                  <span>{score.toFixed(1)}</span>
+                                  {isTopTier && <span style={{ fontSize: '0.65rem', background: '#059669', color: '#fff', padding: '1px 4px', borderRadius: '3px', marginLeft: '2px' }}>TOP 4P</span>}
+                                </div>
+                                <span style={{ fontSize: '0.68rem', opacity: 0.9, fontWeight: 500 }}>
+                                  P1:{prox.toFixed(0)}% | P2:{boxH.toFixed(1)}% | P3:{vr.toFixed(1)}x | P4:{cs.toFixed(0)}%
+                                </span>
+                              </div>
+                            </td>
+                          );
+                        })()}
 
-                        {/* Analysis Reason & Darvas Metrics */}
+                        {/* Analysis Reason & 4 Complete Pillars Breakdown */}
                         <td>
                           <div className="reason-text">
                             {activeTab === 'darvas' ? (
                               <div>
-                                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.3rem' }}>
-                                  <span style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
-                                    Box Top: ₹{item.box_top || recentHigh}
+                                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+                                  {/* Pillar 1: Trend & 52-Week High Proximity */}
+                                  <span title="Pillar 1: Proximity to 52-Week High & Trend Alignment" style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.73rem', fontWeight: 600 }}>
+                                    🏆 P1: 52W High ({item.proximity_pct ? `${item.proximity_pct}%` : 'Near'})
                                   </span>
-                                  {item.box_bottom > 0 && (
-                                    <span style={{ background: 'rgba(107, 114, 128, 0.2)', color: '#9ca3af', border: '1px solid rgba(107, 114, 128, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
-                                      Box Bottom: ₹{item.box_bottom}
-                                    </span>
-                                  )}
-                                  {item.volume_surge_ratio > 0 && (
-                                    <span style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
-                                      🔥 Vol Ratio: {item.volume_surge_ratio}x Avg
-                                    </span>
-                                  )}
-                                  {item.close_strength_pct > 0 && (
-                                    <span style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 600 }}>
-                                      💪 Close Strength: {item.close_strength_pct}%
-                                    </span>
-                                  )}
+
+                                  {/* Pillar 2: Box Structure & Tightness */}
+                                  <span title="Pillar 2: Darvas Box Limits & Consolidation Tightness" style={{ background: 'rgba(139, 92, 246, 0.2)', color: '#c084fc', border: '1px solid rgba(139, 92, 246, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.73rem', fontWeight: 600 }}>
+                                    📦 P2: Box [{item.box_bottom > 0 ? `₹${item.box_bottom} - ` : ''}₹{item.box_top || recentHigh}] {item.box_height_pct ? `(${item.box_height_pct}%)` : ''}
+                                  </span>
+
+                                  {/* Pillar 3: Volume Surge Expansion */}
+                                  <span title="Pillar 3: Breakout Volume Expansion vs 20D SMA" style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.73rem', fontWeight: 600 }}>
+                                    🔥 P3: Vol Surge {item.volume_surge_ratio ? `${item.volume_surge_ratio}x` : '1.5x+'}
+                                  </span>
+
+                                  {/* Pillar 4: Closing Power / Strength */}
+                                  <span title="Pillar 4: Closing Strength in Upper Daily Range" style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.4)', borderRadius: '4px', padding: '2px 6px', fontSize: '0.73rem', fontWeight: 600 }}>
+                                    💪 P4: Close Power {item.close_strength_pct ? `${item.close_strength_pct}%` : '75%+'}
+                                  </span>
                                 </div>
-                                <div style={{ fontSize: '0.8rem', color: '#cbd5e1' }}>{item.reason}</div>
+                                <div style={{ fontSize: '0.8rem', color: '#cbd5e1', lineHeight: '1.35' }}>{item.reason}</div>
                               </div>
                             ) : (
                               item.reason || 'Strong TSI & volume breakout setup.'
