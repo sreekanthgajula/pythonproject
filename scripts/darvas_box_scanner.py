@@ -189,10 +189,14 @@ def analyze_darvas_box_breakout(symbol: str, df: pd.DataFrame = None) -> dict:
     # Price Breakout: Current Close > Box Top * 1.002 (+0.2% buffer)
     price_breakout = (curr_close >= box_top * 1.002)
 
-    # Volume Surge: Current Volume >= 1.5x 20-day Volume SMA
+    # Volume Surge & Turnover Guardrail: Current Volume >= 1.5x 20-day Volume SMA
     vol_sma20 = float(pd.Series(volumes).rolling(20).mean().iloc[-1]) if n >= 20 else float(np.mean(volumes))
     vol_ratio = round(curr_vol / vol_sma20, 2) if vol_sma20 > 0 else 1.0
     volume_surge = (vol_ratio >= 1.5)
+    
+    # Balance 1: Turnover Guardrail (Filter illiquid traps < ₹1 Cr daily turnover)
+    avg_turnover_cr = round((vol_sma20 * curr_close) / 10000000.0, 2)
+    is_sufficient_liquidity = (avg_turnover_cr >= 1.0) or (curr_close >= 50.0)
 
     # Close Strength: Upper 25% of day's range
     day_range = curr_high - curr_low
@@ -203,21 +207,31 @@ def analyze_darvas_box_breakout(symbol: str, df: pd.DataFrame = None) -> dict:
     close_strength_pct = round(close_strength * 100.0, 1)
     close_strong = (close_strength >= 0.75)
 
+    # Balance 2: Box Tightness Guardrail (Max 25% box height to avoid wide/sloppy swing ranges)
+    box_height_pct = round(((box_top - box_bottom) / box_top) * 100.0, 2) if (box_top and box_top > 0) else 10.0
+    box_is_tight = (box_height_pct <= 25.0)
+
+    # Balance 3: Overextension Guardrail (Don't chase extended breakouts > 15% above box top)
+    is_overextended = (curr_close > box_top * 1.15) if box_top else False
+
+    # Balance 4: Risk & Stop Loss Level Calculation
+    stop_loss = round(box_bottom * 0.99, 2) if box_bottom else round(curr_close * 0.95, 2)
+    risk_per_share = round(box_top - stop_loss, 2) if box_top else 0.0
+    risk_pct = round((risk_per_share / box_top) * 100.0, 1) if (box_top and box_top > 0) else 5.0
+
     # 4. Darvas Box Setup & Invalidation Logic:
-    # A stock is a valid Darvas Box setup if:
-    # - It is near 52-week High (within 15%)
-    # - Trend aligned (Close > SMA50 > SMA200)
-    # - Price holds Box Bottom (Close >= 0.98 * Box Bottom)
     holds_box_bottom = (curr_close >= box_bottom * 0.98) if box_bottom else True
 
-    # Invalidation Trigger: Broke Box Bottom, lost SMA50 support, or dropped >15% below 52w High
-    is_invalidated = (not within_15pct_52w) or (not trend_aligned) or (not holds_box_bottom)
+    # Invalidation Trigger: Broke Box Bottom, lost SMA50 support, dropped >15% below 52w High, or wide sloppy box
+    is_invalidated = (not within_15pct_52w) or (not trend_aligned) or (not holds_box_bottom) or (not box_is_tight) or (not is_sufficient_liquidity)
 
     # Active Darvas Setup Qualification:
     is_darvas_setup = (
         within_15pct_52w and
         trend_aligned and
         holds_box_bottom and
+        box_is_tight and
+        is_sufficient_liquidity and
         not is_invalidated
     )
 
@@ -228,7 +242,6 @@ def analyze_darvas_box_breakout(symbol: str, df: pd.DataFrame = None) -> dict:
     trend_bonus = 1.10 if trend_aligned else 1.00
 
     # Pillar 2: Box Tightness & Consolidation Quality (Tighter box % = Higher explosive potential)
-    box_height_pct = round(((box_top - box_bottom) / box_top) * 100.0, 2) if (box_top and box_top > 0) else 10.0
     tightness_factor = round(1.0 + max(0.0, (15.0 - min(15.0, box_height_pct)) / 50.0), 4)
 
     # Pillar 3: Volume Surge Ratio
@@ -237,24 +250,30 @@ def analyze_darvas_box_breakout(symbol: str, df: pd.DataFrame = None) -> dict:
     # Pillar 4: Close Strength %
     cs_pct = close_strength_pct or 0.0
 
-    # Composite 4-Pillar Darvas Score
-    darvas_pillar_score = round(cs_pct * vr_ratio * prox_factor * trend_bonus * tightness_factor, 2)
+    # Composite 4-Pillar Darvas Score (Penalize overextended setups)
+    overextension_penalty = 0.70 if is_overextended else 1.00
+    darvas_pillar_score = round(cs_pct * vr_ratio * prox_factor * trend_bonus * tightness_factor * overextension_penalty, 2)
 
     # Build clear analytical 4-Pillar summary
     reasons = []
     p1_str = f"1️⃣ Trend & 52W High: {proximity_pct:.1f}% of 52w High ({high_52w:.2f})" + (" (Bullish SMA50>200)" if trend_aligned else " (Trend Lag)")
     p2_str = f"2️⃣ Box Structure: [{box_bottom:.2f} - {box_top:.2f}] Range ({box_height_pct:.1f}% Tightness)" if box_bottom else f"2️⃣ Box Top: {box_top:.2f}"
-    p3_str = f"3️⃣ Vol Expansion: {vol_ratio:.1f}x 20d Avg Vol"
-    p4_str = f"4️⃣ Closing Power: {close_strength_pct:.1f}% Daily Range Close"
+    p3_str = f"3️⃣ Vol Expansion: {vol_ratio:.1f}x 20d Avg Vol (Turnover: ₹{avg_turnover_cr:.1f}Cr)"
+    p4_str = f"4️⃣ Closing Power: {close_strength_pct:.1f}% Daily Range Close (Risk: {risk_pct:.1f}%)"
     
     reasons.extend([p1_str, p2_str, p3_str, p4_str])
     
-    if price_breakout:
+    if is_overextended:
+        reasons.append(f"⚠️ OVEREXTENDED (>15% above Box Top RS {box_top:.2f})")
+    elif price_breakout:
         reasons.append(f"🚀 ACTIVE BREAKOUT above Box Top RS {box_top:.2f} (Close: RS {curr_close:.2f})")
     elif holds_box_bottom:
         reasons.append(f"📦 FORMING BOX [RS {box_bottom:.2f} - RS {box_top:.2f}]")
     else:
         reasons.append(f"❌ BROKE BELOW Box Bottom RS {box_bottom:.2f}")
+
+    if not box_is_tight:
+        reasons.append(f"⚠️ SLOPPY BOX ({box_height_pct:.1f}% > 25% max limit)")
 
     if is_invalidated:
         reasons.append("⚠️ SETUP INVALIDATED")
@@ -262,12 +281,17 @@ def analyze_darvas_box_breakout(symbol: str, df: pd.DataFrame = None) -> dict:
     return {
         "symbol": clean_sym,
         "is_darvas_setup": is_darvas_setup,
-        "is_darvas_breakout": price_breakout and volume_surge and close_strong,
+        "is_darvas_breakout": price_breakout and volume_surge and close_strong and not is_overextended,
         "is_invalidated": is_invalidated,
+        "is_overextended": is_overextended,
         "close_price": round(curr_close, 2),
         "box_top": round(box_top, 2) if box_top else 0.0,
         "box_bottom": round(box_bottom, 2) if box_bottom else 0.0,
         "box_height_pct": box_height_pct,
+        "stop_loss": stop_loss,
+        "risk_per_share": risk_per_share,
+        "risk_pct": risk_pct,
+        "avg_turnover_cr": avg_turnover_cr,
         "volume_surge_ratio": vol_ratio,
         "close_strength_pct": close_strength_pct,
         "proximity_pct": proximity_pct,
