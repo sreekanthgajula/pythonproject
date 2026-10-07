@@ -1147,10 +1147,43 @@ def trigger_darvas_box_scan():
             "data": qualified_docs
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to execute Darvas Box scan: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to scan Darvas Box breakouts: {e}")
+
+@app.get("/api/short-candidates")
+def get_short_candidates():
+    """Returns ranked list of high-probability morning short & reversal stock candidates descending by short score."""
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        col = dm.db["short_candidates"]
+        cursor = col.find({}, {"_id": 0}).sort("short_probability_score", -1).limit(100)
+        docs = list(cursor)
+        return {
+            "status": "success",
+            "count": len(docs),
+            "data": docs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch short candidates: {e}")
+
+@app.post("/api/short-candidates/scan")
+def trigger_short_candidates_scan():
+    """Triggers real-time scanning & ranking of morning short/fade stock candidates."""
+    try:
+        from scripts.morning_short_scanner import scan_and_rank_short_candidates
+        results = scan_and_rank_short_candidates()
+        return {
+            "status": "success",
+            "message": f"Successfully scanned {len(results)} stocks for morning short probability.",
+            "count": len(results),
+            "data": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run short candidates scan: {e}")
 
 
 _last_darvas_purge_time = 0.0
+
 
 @app.get("/api/ratings/{timeframe}")
 def get_stock_ratings(timeframe: str, background_tasks: BackgroundTasks):
@@ -1620,6 +1653,66 @@ def toggle_paper_strategy(payload: dict):
         raise HTTPException(status_code=400, detail="PaperTradingEngine not ready")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to toggle strategy: {e}")
+
+@app.get("/api/short-candidates")
+def get_short_candidates_endpoint():
+    """
+    Retrieves high-probability morning short/fade stock candidates from MongoDB collection 'short_candidates'
+    ranked in descending order of short probability score.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        col = dm.db["short_candidates"]
+        candidates = list(col.find({}, {"_id": 0}).sort("short_probability_score", -1))
+        return {"status": "success", "count": len(candidates), "candidates": candidates}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch short candidates: {e}")
+
+
+@app.post("/api/scan-short-candidates")
+def trigger_short_candidates_scan(background_tasks: BackgroundTasks):
+    """
+    Triggers an asynchronous scan for morning shorting candidates (9:15 AM - 10:15 AM high volatility setup)
+    and updates MongoDB 'short_candidates'.
+    """
+    try:
+        from scripts.morning_short_scanner import scan_and_rank_short_candidates
+        background_tasks.add_task(scan_and_rank_short_candidates)
+        return {"status": "success", "message": "Morning short candidate scan initiated in background."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to trigger short candidate scan: {e}")
+
+
+@app.get("/api/evening-candidates")
+def get_evening_candidates_endpoint():
+    """
+    Retrieves high-probability Evening Professional Buying (BTST Accumulation) stock candidates
+    from MongoDB collection 'evening_pro_candidates' ranked in descending order of pro_buying_score.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        col = dm.db["evening_pro_candidates"]
+        candidates = list(col.find({}, {"_id": 0}).sort("pro_buying_score", -1))
+        return {"status": "success", "count": len(candidates), "candidates": candidates}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch evening pro buying candidates: {e}")
+
+
+@app.post("/api/scan-evening-candidates")
+def trigger_evening_candidates_scan(background_tasks: BackgroundTasks):
+    """
+    Triggers an asynchronous scan for Evening Professional Buying candidates (2:30 PM - 3:30 PM BTST setup)
+    and updates MongoDB 'evening_pro_candidates'.
+    """
+    try:
+        from scripts.evening_pro_scanner import scan_and_rank_evening_pro_candidates
+        background_tasks.add_task(scan_and_rank_evening_pro_candidates)
+        return {"status": "success", "message": "Evening professional buying candidate scan initiated in background."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to trigger evening candidate scan: {e}")
+
 
 if __name__ == "__main__":
     import uvicorn

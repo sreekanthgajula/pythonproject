@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   TrendingUp,
+  TrendingDown,
   Flame,
   RefreshCw,
   Search,
@@ -22,7 +23,8 @@ import {
 } from 'lucide-react';
 import StockAlertRaceChart from './components/StockAlertRaceChart';
 import DerivativesSpeedometer from './components/DerivativesSpeedometer';
-import StrategyPerformanceDashboard from './components/StrategyPerformanceDashboard';
+import MorningShortScanner from './components/MorningShortScanner';
+import EveningProScanner from './components/EveningProScanner';
 
 const API_BASE_URL = '/api';
 
@@ -134,7 +136,7 @@ export default function App() {
 
   // Fetch stocks data for the active timeframe
   const fetchTimeframeRatings = async (timeframe, isBackground = false) => {
-    if (timeframe === 'race' || timeframe === 'todays_race' || timeframe === 'strategies') return;
+    if (timeframe === 'race' || timeframe === 'todays_race') return;
     if (timeframe === 'active_gtts' || timeframe === 'gtts') {
       fetchZerodhaGtts(isBackground);
       return;
@@ -335,6 +337,16 @@ export default function App() {
       }
     } catch (err) {
       console.error('Error fetching race tab count:', err);
+    }
+
+    try {
+      const shortRes = await fetch(`${API_BASE_URL}/short-candidates`);
+      if (shortRes.ok) {
+        const json = await shortRes.json();
+        newCounts.morning_short = json.count || 0;
+      }
+    } catch (err) {
+      console.error('Error fetching morning_short tab count:', err);
     }
 
     setTabCounts(prev => {
@@ -965,210 +977,229 @@ export default function App() {
       />
 
       {/* Prominent Tabs Navigation */}
-      <div className="tabs-header-container">
-
-        <nav className="tabs-nav">
-          <button
-            className={`tab-btn ${activeTab === 'monthly' ? 'active' : ''}`}
-            onClick={() => setActiveTab('monthly')}
-          >
-            <Calendar size={16} />
-            <span>Monthly Tab</span>
-            <span className="tab-badge">{tabCounts.monthly || 0}</span>
-          </button>
-
-          <button
-            className={`tab-btn ${activeTab === 'weekly' ? 'active' : ''}`}
-            onClick={() => setActiveTab('weekly')}
-          >
-            <Clock size={16} />
-            <span>Weekly Tab</span>
-            <span className="tab-badge">{tabCounts.weekly || 0}</span>
-          </button>
-
-          <button
-            className={`tab-btn ${activeTab === 'daily' ? 'active' : ''}`}
-            onClick={() => setActiveTab('daily')}
-          >
-            <Zap size={16} />
-            <span>Daily Tab</span>
-            <span className="tab-badge">{tabCounts.daily || 0}</span>
-          </button>
-
-          {/* 🌟 TAB 4: MANUAL HIGH POTENCY TAB */}
-          <button
-            className={`tab-btn ${activeTab === 'manual' ? 'active' : ''}`}
-            onClick={() => setActiveTab('manual')}
-          >
-            <Sparkles size={16} color="#ec4899" />
-            <span>Manual 🌟</span>
-            <span className="tab-badge" style={{ background: '#ec4899', color: '#fff' }}>{tabCounts.manual || 0}</span>
-          </button>
-
-          {/* ⚡ TAB 5: TRUE DARVAS BOX BREAKOUTS */}
-          <button
-            className={`tab-btn ${activeTab === 'darvas' ? 'active' : ''}`}
-            onClick={() => setActiveTab('darvas')}
-            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
-          >
-            <Flame size={16} color="#3b82f6" />
-            <span>⚡ Darvas Box</span>
-            <span className="tab-badge" style={{ background: '#3b82f6', color: '#fff' }}>{tabCounts.darvas || 0}</span>
-          </button>
-
-          {/* ⚡ TAB 4: ACTIVE & TRIGGERED ZERODHA GTTS */}
-          <button
-            className={`tab-btn ${activeTab === 'active_gtts' || activeTab === 'gtts' ? 'active' : ''}`}
-            onClick={() => setActiveTab('active_gtts')}
-            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
-          >
-            <ShieldCheck size={16} color="#10b981" />
-            <span>⚡ Active GTTs</span>
-            <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.active_gtts || 0}</span>
-          </button>
-
-          {/* 🏎️ TAB 5: STOCK ALERT RACE */}
-          <button
-            className={`tab-btn ${activeTab === 'race' || activeTab === 'todays_race' || activeTab === 'past_week_race' ? 'active' : ''}`}
-            onClick={() => setActiveTab('todays_race')}
-            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
-          >
-            <Trophy size={16} color="#f59e0b" />
-            <span>🏎️ Stock Alert Race</span>
-            <span className="tab-badge" style={{ background: '#f59e0b', color: '#fff' }}>{tabCounts.todays_race || tabCounts.race || 0}</span>
-          </button>
-
-          {/* 🤖 TAB 6: STRATEGY PERFORMANCE & PAPER TRADING DASHBOARD */}
-          <button
-            className={`tab-btn ${activeTab === 'strategies' ? 'active' : ''}`}
-            onClick={() => setActiveTab('strategies')}
-            style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
-          >
-            <Zap size={16} color="#38bdf8" />
-            <span>🤖 Strategies & Leaderboard</span>
-          </button>
-        </nav>
-
-        {/* Quick Sorting Pills & Delete All Button (Hidden on Active GTTS, Race & Strategies tabs) */}
-        {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'strategies' && (
-          <div className="sort-controls">
-            {activeTab === 'manual' && (
-              <button
-                className="btn-add-manual-stock"
-                onClick={() => {
-                  setManualError('');
-                  setIsAddModalOpen(true);
-                }}
-                title="Manually add a high potency stock to track and set 1% GTT alert"
-                style={{ marginRight: '0.5rem' }}
-              >
-                <Sparkles size={16} />
-                <span>+ Add Stock Manually</span>
-              </button>
-            )}
-
-            <span className="sort-label">Sort By:</span>
+      {/* Timeframe Tabs & Pipeline Runner Header */}
+      <div className="tabs-header-container" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '0.85rem' }}>
+        {/* ROW 1: PRIMARY TIMEFRAME & STRATEGY TABS */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1rem', flexWrap: 'wrap' }}>
+          <nav className="tabs-nav">
             <button
-              className={`sort-pill ${sortKey === 'rating' ? 'active' : ''}`}
-              onClick={() => handleSort('rating')}
+              className={`tab-btn ${activeTab === 'monthly' ? 'active' : ''}`}
+              onClick={() => setActiveTab('monthly')}
             >
-              <Star size={13} />
-              <span>Grok Rating {sortKey === 'rating' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
-            </button>
-
-            {activeTab === 'darvas' && (
-              <button
-                className={`sort-pill ${sortKey === 'darvas_score' || sortKey === 'darvas_pillar_score' || sortKey === 'close_strength_pct' || sortKey === 'rating' ? 'active' : ''}`}
-                onClick={() => handleSort('darvas_score')}
-                title="Sort stocks by the 4 Complete Pillars of a True Darvas Box Setup (Best setups at top descending)"
-              >
-                <Zap size={13} color="#fbbf24" />
-                <span>⚡ 4-Pillar Darvas Score {(sortKey === 'darvas_score' || sortKey === 'darvas_pillar_score' || sortKey === 'close_strength_pct' || sortKey === 'rating') ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
-              </button>
-            )}
-
-            <button
-              className={`sort-pill ${sortKey === 'updated_at' ? 'active' : ''}`}
-              onClick={() => handleSort('updated_at')}
-            >
-              <Clock size={13} />
-              <span>Last Updated {sortKey === 'updated_at' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+              <Calendar size={16} />
+              <span>Monthly Tab</span>
+              <span className="tab-badge">{tabCounts.monthly || 0}</span>
             </button>
 
             <button
-              className={`sort-pill ${sortKey === 'alert_count' ? 'active' : ''}`}
-              onClick={() => handleSort('alert_count')}
+              className={`tab-btn ${activeTab === 'weekly' ? 'active' : ''}`}
+              onClick={() => setActiveTab('weekly')}
             >
-              <Flame size={13} />
-              <span>Alert Count {sortKey === 'alert_count' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+              <Clock size={16} />
+              <span>Weekly Tab</span>
+              <span className="tab-badge">{tabCounts.weekly || 0}</span>
             </button>
 
             <button
-              className="btn-gtt-reset-all"
-              onClick={() => handleResetAllGtts(activeTab)}
-              disabled={loading || stocksData.length === 0 || resettingAllGtts}
-              title={`Cancel old GTTs and set new 1% GTT breakout alerts from current trading prices for all ${activeTab.toUpperCase()} stocks`}
+              className={`tab-btn ${activeTab === 'daily' ? 'active' : ''}`}
+              onClick={() => setActiveTab('daily')}
             >
-              {resettingAllGtts ? (
-                <>
-                  <div className="loading-spinner" style={{ width: '13px', height: '13px' }}></div>
-                  <span>Resetting GTTs...</span>
-                </>
-              ) : (
-                <>
-                  <Zap size={14} color="#f59e0b" />
-                  <span>⚡ Reset 1% GTTs (Current Price)</span>
-                </>
+              <Zap size={16} />
+              <span>Daily Tab</span>
+              <span className="tab-badge">{tabCounts.daily || 0}</span>
+            </button>
+
+            {/* 🌟 TAB 4: MANUAL HIGH POTENCY TAB */}
+            <button
+              className={`tab-btn ${activeTab === 'manual' ? 'active' : ''}`}
+              onClick={() => setActiveTab('manual')}
+            >
+              <Sparkles size={16} color="#ec4899" />
+              <span>Manual 🌟</span>
+              <span className="tab-badge" style={{ background: '#ec4899', color: '#fff' }}>{tabCounts.manual || 0}</span>
+            </button>
+
+            {/* ⚡ TAB 5: TRUE DARVAS BOX BREAKOUTS */}
+            <button
+              className={`tab-btn ${activeTab === 'darvas' ? 'active' : ''}`}
+              onClick={() => setActiveTab('darvas')}
+              style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
+            >
+              <Flame size={16} color="#3b82f6" />
+              <span>⚡ Darvas Box</span>
+              <span className="tab-badge" style={{ background: '#3b82f6', color: '#fff' }}>{tabCounts.darvas || 0}</span>
+            </button>
+
+            {/* ⚡ TAB 6: ACTIVE & TRIGGERED ZERODHA GTTS */}
+            <button
+              className={`tab-btn ${activeTab === 'active_gtts' || activeTab === 'gtts' ? 'active' : ''}`}
+              onClick={() => setActiveTab('active_gtts')}
+              style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
+            >
+              <ShieldCheck size={16} color="#10b981" />
+              <span>⚡ Active GTTs</span>
+              <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.active_gtts || 0}</span>
+            </button>
+
+            {/* 🏎️ TAB 7: STOCK ALERT RACE */}
+            <button
+              className={`tab-btn ${activeTab === 'race' || activeTab === 'todays_race' || activeTab === 'past_week_race' ? 'active' : ''}`}
+              onClick={() => setActiveTab('todays_race')}
+              style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
+            >
+              <Trophy size={16} color="#f59e0b" />
+              <span>🏎️ Stock Alert Race</span>
+              <span className="tab-badge" style={{ background: '#f59e0b', color: '#fff' }}>{tabCounts.todays_race || tabCounts.race || 0}</span>
+            </button>
+          </nav>
+
+          {/* Quick Sorting Pills & Delete All Button (Hidden on Active GTTS, Race, Morning Short & Evening Pro tabs) */}
+          {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && (
+            <div className="sort-controls">
+              {activeTab === 'manual' && (
+                <button
+                  className="btn-add-manual-stock"
+                  onClick={() => {
+                    setManualError('');
+                    setIsAddModalOpen(true);
+                  }}
+                  title="Manually add a high potency stock to track and set 1% GTT alert"
+                  style={{ marginRight: '0.5rem' }}
+                >
+                  <Sparkles size={16} />
+                  <span>+ Add Stock Manually</span>
+                </button>
               )}
-            </button>
 
-            {selectedSymbols.length > 0 && (
+              <span className="sort-label">Sort By:</span>
               <button
-                className="btn-danger-solid"
-                onClick={handleDeleteSelectedStocks}
-                title={`Delete ${selectedSymbols.length} selected stocks from ${activeTab} DB`}
+                className={`sort-pill ${sortKey === 'rating' ? 'active' : ''}`}
+                onClick={() => handleSort('rating')}
+              >
+                <Star size={13} />
+                <span>Grok Rating {sortKey === 'rating' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+              </button>
+
+              {activeTab === 'darvas' && (
+                <button
+                  className={`sort-pill ${sortKey === 'darvas_score' || sortKey === 'darvas_pillar_score' || sortKey === 'close_strength_pct' || sortKey === 'rating' ? 'active' : ''}`}
+                  onClick={() => handleSort('darvas_score')}
+                  title="Sort stocks by the 4 Complete Pillars of a True Darvas Box Setup (Best setups at top descending)"
+                >
+                  <Zap size={13} color="#fbbf24" />
+                  <span>⚡ 4-Pillar Darvas Score {(sortKey === 'darvas_score' || sortKey === 'darvas_pillar_score' || sortKey === 'close_strength_pct' || sortKey === 'rating') ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+                </button>
+              )}
+
+              <button
+                className={`sort-pill ${sortKey === 'updated_at' ? 'active' : ''}`}
+                onClick={() => handleSort('updated_at')}
+              >
+                <Clock size={13} />
+                <span>Last Updated {sortKey === 'updated_at' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+              </button>
+
+              <button
+                className={`sort-pill ${sortKey === 'alert_count' ? 'active' : ''}`}
+                onClick={() => handleSort('alert_count')}
+              >
+                <Flame size={13} />
+                <span>Alert Count {sortKey === 'alert_count' ? (sortOrder === 'desc' ? '▼' : '▲') : ''}</span>
+              </button>
+
+              <button
+                className="btn-gtt-reset-all"
+                onClick={() => handleResetAllGtts(activeTab)}
+                disabled={loading || stocksData.length === 0 || resettingAllGtts}
+                title={`Cancel old GTTs and set new 1% GTT breakout alerts from current trading prices for all ${activeTab.toUpperCase()} stocks`}
+              >
+                {resettingAllGtts ? (
+                  <>
+                    <div className="loading-spinner" style={{ width: '13px', height: '13px' }}></div>
+                    <span>Resetting GTTs...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap size={14} color="#f59e0b" />
+                    <span>⚡ Reset 1% GTTs (Current Price)</span>
+                  </>
+                )}
+              </button>
+
+              {selectedSymbols.length > 0 && (
+                <button
+                  className="btn-danger-solid"
+                  onClick={handleDeleteSelectedStocks}
+                  title={`Delete ${selectedSymbols.length} selected stocks from ${activeTab} DB`}
+                >
+                  <Trash2 size={14} />
+                  <span>Delete Selected ({selectedSymbols.length})</span>
+                </button>
+              )}
+
+              <button
+                className="btn-danger-outline"
+                onClick={handleDeleteAllTimeframeStocks}
+                title={`Delete all ${activeTab} stocks from database`}
+                disabled={stocksData.length === 0}
               >
                 <Trash2 size={14} />
-                <span>Delete Selected ({selectedSymbols.length})</span>
+                <span>Delete All {activeTab.toUpperCase()} Stocks</span>
               </button>
-            )}
+            </div>
+          )}
 
+          {(activeTab === 'active_gtts' || activeTab === 'gtts') && (
+            <div className="sort-controls" style={{ marginLeft: 'auto' }}>
+              <button
+                className="btn-sync-gtts"
+                onClick={handleSyncGtts}
+                disabled={syncingGtts}
+                title="Deduplicate & sync active GTT orders on Zerodha with DB watchlist"
+              >
+                {syncingGtts ? (
+                  <>
+                    <div className="loading-spinner" style={{ width: '13px', height: '13px' }}></div>
+                    <span>Syncing GTTs...</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw size={14} />
+                    <span>Sync GTTs (Clean Duplicates)</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* ROW 2: SPECIALIZED SCANNER TABS (NEW ROW BELOW) */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1rem', flexWrap: 'wrap' }}>
+          <nav className="tabs-nav tabs-nav-secondary">
+            {/* 🚨 TAB 8: MORNING SHORT SCANNER */}
             <button
-              className="btn-danger-outline"
-              onClick={handleDeleteAllTimeframeStocks}
-              title={`Delete all ${activeTab} stocks from database`}
-              disabled={stocksData.length === 0}
+              className={`tab-btn ${activeTab === 'morning_short' ? 'active-short' : ''}`}
+              onClick={() => setActiveTab('morning_short')}
             >
-              <Trash2 size={14} />
-              <span>Delete All {activeTab.toUpperCase()} Stocks</span>
+              <TrendingDown size={16} color="#ef4444" />
+              <span>🚨 Morning Short</span>
+              <span className="tab-badge" style={{ background: '#ef4444', color: '#fff' }}>{tabCounts.morning_short || 0}</span>
             </button>
-          </div>
-        )}
 
-        {(activeTab === 'active_gtts' || activeTab === 'gtts') && (
-          <div className="sort-controls" style={{ marginLeft: 'auto' }}>
+            {/* 🚀 TAB 9: EVENING PRO BUYING (BTST) */}
             <button
-              className="btn-sync-gtts"
-              onClick={handleSyncGtts}
-              disabled={syncingGtts}
-              title="Deduplicate & sync active GTT orders on Zerodha with DB watchlist"
+              className={`tab-btn ${activeTab === 'evening_pro' ? 'active-pro' : ''}`}
+              onClick={() => setActiveTab('evening_pro')}
+              style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
             >
-              {syncingGtts ? (
-                <>
-                  <div className="loading-spinner" style={{ width: '13px', height: '13px' }}></div>
-                  <span>Syncing GTTs...</span>
-                </>
-              ) : (
-                <>
-                  <RefreshCw size={14} />
-                  <span>Sync GTTs (Clean Duplicates)</span>
-                </>
-              )}
+              <TrendingUp size={16} color="#10b981" />
+              <span>🚀 Evening Pro Buying</span>
+              <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.evening_pro || 0}</span>
             </button>
-          </div>
-        )}
+          </nav>
+        </div>
 
-        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'strategies' && (
+        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && (
           <div className="search-box">
             <Search className="search-icon" size={16} />
             <input
@@ -1182,9 +1213,12 @@ export default function App() {
         )}
       </div>
 
-      {activeTab === 'strategies' ? (
-        /* 🤖 STRATEGY PERFORMANCE & PAPER TRADING DASHBOARD VIEW */
-        <StrategyPerformanceDashboard />
+      {activeTab === 'evening_pro' ? (
+        /* 🚀 EVENING PROFESSIONAL BUYING (BTST) SCANNER VIEW */
+        <EveningProScanner />
+      ) : activeTab === 'morning_short' ? (
+        /* 🚨 MORNING SHORT & FADE REVERSAL SCANNER VIEW */
+        <MorningShortScanner />
       ) : activeTab === 'todays_race' ? (
         /* 🏎️ TODAY'S STOCK ALERT RACE VIEW (Current Day Only) */
         <StockAlertRaceChart todayOnly={true} pastWeekOnly={false} />
