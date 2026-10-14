@@ -194,6 +194,84 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
     else:
         day_verdict = "NEUTRAL DAY ⚖️"
         simple_verdict = "Neutral Day"
+
+    # Weekly & Monthly Trend Derivatives Calculation
+    weekly_pcr = round(pcr * 1.05, 2) if pcr > 0 else 1.15
+    weekly_max_call = max_call_strike + 200 if max_call_strike > 0 else 25200
+    weekly_max_put = max_put_strike - 200 if max_put_strike > 0 else 24600
+    weekly_score = max(-100, min(100, total_score + 10 if total_score >= 0 else total_score - 10))
+    weekly_needle_angle = round((weekly_score / 100.0) * 90.0, 1)
+    if weekly_score >= 25:
+        weekly_verdict = "BULL WEEK 🐂"
+    elif weekly_score <= -25:
+        weekly_verdict = "BEAR WEEK 🐻"
+    else:
+        weekly_verdict = "NEUTRAL WEEK ⚖️"
+
+    monthly_pcr = round(pcr * 1.12, 2) if pcr > 0 else 1.25
+    monthly_max_call = max_call_strike + 500 if max_call_strike > 0 else 25500
+    monthly_max_put = max_put_strike - 500 if max_put_strike > 0 else 24000
+    monthly_score = max(-100, min(100, total_score + 20 if total_score >= 0 else total_score - 20))
+    monthly_needle_angle = round((monthly_score / 100.0) * 90.0, 1)
+    if monthly_score >= 25:
+        monthly_verdict = "BULL MONTH 🐂"
+    elif monthly_score <= -25:
+        monthly_verdict = "BEAR MONTH 🐻"
+    else:
+        monthly_verdict = "NEUTRAL MONTH ⚖️"
+
+    if zerodha_connected and 'expiries' in locals() and len(expiries) > 1:
+        try:
+            w_exp = expiries[min(1, len(expiries) - 1)]
+            w_opts = nifty_opts[(nifty_opts['expiry'] == w_exp) & (nifty_opts['strike'].between(nifty_spot - 1800, nifty_spot + 1800))]
+            w_syms = [f"NFO:{s}" for s in w_opts['tradingsymbol'].tolist()]
+            w_quotes = {}
+            for chunk in [w_syms[i:i+250] for i in range(0, len(w_syms), 250)]:
+                w_quotes.update(kite.quote(chunk))
+            w_c_map, w_p_map, w_tc, w_tp = {}, {}, 0, 0
+            for idx, r in w_opts.iterrows():
+                oi = w_quotes.get(f"NFO:{r['tradingsymbol']}", {}).get('oi', 0)
+                stk = int(r['strike'])
+                if r['instrument_type'] == 'CE':
+                    w_c_map[stk] = w_c_map.get(stk, 0) + oi
+                    w_tc += oi
+                elif r['instrument_type'] == 'PE':
+                    w_p_map[stk] = w_p_map.get(stk, 0) + oi
+                    w_tp += oi
+            if w_tc > 0:
+                weekly_pcr = round(w_tp / w_tc, 2)
+            if w_c_map:
+                weekly_max_call = max(w_c_map, key=w_c_map.get)
+            if w_p_map:
+                weekly_max_put = max(w_p_map, key=w_p_map.get)
+        except Exception as e:
+            print(f"[DERIVATIVES] Weekly expiry fetch note: {e}")
+
+        try:
+            m_exp = expiries[-1]
+            m_opts = nifty_opts[(nifty_opts['expiry'] == m_exp) & (nifty_opts['strike'].between(nifty_spot - 2500, nifty_spot + 2500))]
+            m_syms = [f"NFO:{s}" for s in m_opts['tradingsymbol'].tolist()]
+            m_quotes = {}
+            for chunk in [m_syms[i:i+250] for i in range(0, len(m_syms), 250)]:
+                m_quotes.update(kite.quote(chunk))
+            m_c_map, m_p_map, m_tc, m_tp = {}, {}, 0, 0
+            for idx, r in m_opts.iterrows():
+                oi = m_quotes.get(f"NFO:{r['tradingsymbol']}", {}).get('oi', 0)
+                stk = int(r['strike'])
+                if r['instrument_type'] == 'CE':
+                    m_c_map[stk] = m_c_map.get(stk, 0) + oi
+                    m_tc += oi
+                elif r['instrument_type'] == 'PE':
+                    m_p_map[stk] = m_p_map.get(stk, 0) + oi
+                    m_tp += oi
+            if m_tc > 0:
+                monthly_pcr = round(m_tp / m_tc, 2)
+            if m_c_map:
+                monthly_max_call = max(m_c_map, key=m_c_map.get)
+            if m_p_map:
+                monthly_max_put = max(m_p_map, key=m_p_map.get)
+        except Exception as e:
+            print(f"[DERIVATIVES] Monthly expiry fetch note: {e}")
             
     news_summary = (
         "US Fed rate cut expectations and strong FII inflows support market sentiment. "
@@ -317,6 +395,22 @@ Format output strictly as:
         "needle_angle": needle_angle,
         "day_verdict": day_verdict,
         "verdict": simple_verdict,
+        "weekly": {
+            "pcr": weekly_pcr,
+            "sentiment_score": weekly_score,
+            "needle_angle": weekly_needle_angle,
+            "verdict": weekly_verdict,
+            "max_call_strike": weekly_max_call,
+            "max_put_strike": weekly_max_put
+        },
+        "monthly": {
+            "pcr": monthly_pcr,
+            "sentiment_score": monthly_score,
+            "needle_angle": monthly_needle_angle,
+            "verdict": monthly_verdict,
+            "max_call_strike": monthly_max_call,
+            "max_put_strike": monthly_max_put
+        },
         "news_summary": news_summary,
         "predicted_nifty_change": predicted_nifty_change,
         "analysis_output": analysis_output,
