@@ -364,16 +364,30 @@ class ZerodhaWebSocketAlertEngine:
                     f"📝 <i>{darvas_doc.get('reason', 'Confirmed Darvas Box Breakout')}</i>"
                 )
                 
-                tg_url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-                tg_payload = {
-                    "chat_id": telegram_chat_id,
-                    "text": tg_text,
-                    "parse_mode": "HTML"
-                }
-                if tg_resp.status_code == 200:
-                    logger.info(f"⚡ [TELEGRAM] Successfully dispatched True Darvas Box Breakout Telegram Alert for {symbol}!")
+                from scripts.chart_generator import send_telegram_chart_alert
+
+                # Append 5-min buyer analysis details if available
+                buyer_score = buyer_analysis.get("score_out_of_10")
+                if buyer_score is not None:
+                    c = buyer_analysis.get("conditions", {})
+                    c_vol = "✅ High" if c.get("volume_spike") else "Normal"
+                    c_candle = "✅ Bullish" if c.get("bullish_candle") else "Neutral"
+                    tg_text += (
+                        f"\n\n📊 <b>5m Buyer Volume Engine</b>:\n"
+                        f"• Rating: <b>{buyer_score}/10</b>\n"
+                        f"• Candle: <b>{c_candle}</b> | Volume Spike: <b>{c_vol}</b>"
+                    )
+
+                res = send_telegram_chart_alert(
+                    symbol=symbol,
+                    message_text=tg_text,
+                    trigger_price=trigger_price,
+                    parse_mode="HTML"
+                )
+                if res.get("sent"):
+                    logger.info(f"⚡ [TELEGRAM] Successfully dispatched True Darvas Box Breakout Alert with 5m Chart for {symbol}!")
                 else:
-                    logger.error(f"Telegram dispatch failed: Status {tg_resp.status_code}, Body: {tg_resp.text}")
+                    logger.error(f"Telegram dispatch failed for {symbol}: {res.get('error') or res.get('message')}")
             else:
                 logger.info(f"Telegram token/chat_id not set; skipped Telegram dispatch for {symbol}.")
         except Exception as alert_err:

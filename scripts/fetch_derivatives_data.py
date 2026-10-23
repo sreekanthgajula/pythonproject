@@ -418,6 +418,14 @@ Format output strictly as:
         "grok_cached": grok_cached,
         "last_updated_time": last_updated_time
     }
+    
+    # Enrich with 1-10 strength rating
+    rating_data = calculate_derivatives_strength_rating(res)
+    res["rating_out_of_10"] = rating_data["rating"]
+    res["rating_bias"] = rating_data["bias"]
+    res["rating_conviction"] = rating_data["conviction"]
+    res["rating_bar"] = rating_data["bar"]
+
     _DERIVATIVES_CACHE["zerodha_analysis"] = res
     _DERIVATIVES_CACHE["last_zerodha_fetch_time"] = now_ts
     
@@ -431,15 +439,136 @@ Format output strictly as:
 
 import html
 
+def calculate_derivatives_strength_rating(derivatives_data: dict) -> dict:
+    """
+    Computes a 1.0 to 10.0 strength rating and directional bias (BULL / BEAR / NEUTRAL)
+    based on live Zerodha derivatives metrics: PCR, GIFT basis, sentiment score, and India VIX.
+    """
+    pcr = float(derivatives_data.get("pcr", 1.0) or 1.0)
+    sentiment_score = float(derivatives_data.get("sentiment_score", 0) or 0)
+    gift_nifty = float(derivatives_data.get("gift_nifty", 0.0) or 0.0)
+    nifty_spot = float(derivatives_data.get("nifty_spot", 0.0) or 0.0)
+    basis = gift_nifty - nifty_spot if (gift_nifty and nifty_spot) else 0.0
+    vix = float(derivatives_data.get("india_vix", 14.0) or 14.0)
+
+    is_bull = sentiment_score > 15 or pcr >= 1.05
+    is_bear = sentiment_score < -15 or pcr <= 0.85
+
+    if is_bull:
+        bias = "BULL"
+        emoji = "🐂"
+        header_emoji = "🟢"
+
+        # PCR Pillar (up to 3.5 pts)
+        if pcr >= 1.35:
+            pcr_pts = 3.5
+        elif pcr >= 1.20:
+            pcr_pts = 2.7 + (pcr - 1.20) / 0.15 * 0.8
+        elif pcr >= 1.05:
+            pcr_pts = 1.8 + (pcr - 1.05) / 0.15 * 0.9
+        else:
+            pcr_pts = 1.2
+
+        # GIFT Nifty Basis Pillar (up to 2.5 pts)
+        if basis >= 60:
+            basis_pts = 2.5
+        elif basis >= 20:
+            basis_pts = 1.5 + (basis - 20) / 40.0 * 1.0
+        elif basis >= 0:
+            basis_pts = 0.8 + (basis / 20.0) * 0.7
+        else:
+            basis_pts = 0.3
+
+        # Sentiment Score Pillar (up to 2.5 pts)
+        score_pts = min(2.5, max(0.8, (max(0, sentiment_score) / 100.0) * 2.5 + 0.8))
+
+        # India VIX Risk Pillar (up to 1.5 pts)
+        if vix <= 13.0:
+            vix_pts = 1.5
+        elif vix <= 16.0:
+            vix_pts = 1.1
+        elif vix <= 19.0:
+            vix_pts = 0.6
+        else:
+            vix_pts = 0.2
+
+        total = pcr_pts + basis_pts + score_pts + vix_pts
+    elif is_bear:
+        bias = "BEAR"
+        emoji = "🐻"
+        header_emoji = "🔴"
+
+        # PCR Pillar (up to 3.5 pts)
+        if pcr <= 0.65:
+            pcr_pts = 3.5
+        elif pcr <= 0.80:
+            pcr_pts = 2.7 + (0.80 - pcr) / 0.15 * 0.8
+        elif pcr <= 0.95:
+            pcr_pts = 1.8 + (0.95 - pcr) / 0.15 * 0.9
+        else:
+            pcr_pts = 1.2
+
+        # GIFT Basis Pillar (up to 2.5 pts)
+        if basis <= -60:
+            basis_pts = 2.5
+        elif basis <= -20:
+            basis_pts = 1.5 + (-basis - 20) / 40.0 * 1.0
+        elif basis <= 0:
+            basis_pts = 0.8 + (-basis / 20.0) * 0.7
+        else:
+            basis_pts = 0.3
+
+        # Sentiment Score Pillar (up to 2.5 pts)
+        score_pts = min(2.5, max(0.8, (abs(min(0, sentiment_score)) / 100.0) * 2.5 + 0.8))
+
+        # India VIX Risk Pillar (up to 1.5 pts)
+        if vix >= 18.0:
+            vix_pts = 1.5
+        elif vix >= 15.0:
+            vix_pts = 1.1
+        else:
+            vix_pts = 0.6
+
+        total = pcr_pts + basis_pts + score_pts + vix_pts
+    else:
+        bias = "NEUTRAL"
+        emoji = "⚖️"
+        header_emoji = "🟡"
+        total = 5.0
+
+    rating = round(min(10.0, max(1.0, total)), 1)
+    if rating >= 8.5:
+        conviction = "VERY STRONG 🔥"
+    elif rating >= 7.0:
+        conviction = "STRONG 🚀"
+    elif rating >= 5.5:
+        conviction = "MODERATE 📈"
+    else:
+        conviction = "MILD ⚖️"
+
+    filled = int(round(rating))
+    bar = "█" * filled + "░" * (10 - filled)
+
+    return {
+        "bias": bias,
+        "emoji": emoji,
+        "header_emoji": header_emoji,
+        "rating": rating,
+        "conviction": conviction,
+        "bar": bar
+    }
+
 def detect_options_pressure_buildup(derivatives_data: dict) -> dict:
     """
-    Identifies strong options pressure building up on Put Side vs Call Side.
+    Identifies strong options pressure building up on Put Side vs Call Side,
+    enriched with a 1-10 strength rating.
     """
     pcr = derivatives_data.get("pcr", 1.0) or 1.0
     sentiment_score = derivatives_data.get("sentiment_score", 0) or 0
     gift_nifty = derivatives_data.get("gift_nifty", 0.0) or 0.0
     nifty_spot = derivatives_data.get("nifty_spot", 0.0) or 0.0
     basis = gift_nifty - nifty_spot if (gift_nifty and nifty_spot) else 0.0
+    rating_data = calculate_derivatives_strength_rating(derivatives_data)
 
     if pcr >= 1.20 or sentiment_score >= 25:
         return {
@@ -452,7 +581,8 @@ def detect_options_pressure_buildup(derivatives_data: dict) -> dict:
             "pcr_desc": "Strong Put Accumulation (Bullish Support Holding)",
             "vix_desc": "Low Volatility Risk",
             "reason": f"Aggressive Put writing at {derivatives_data.get('max_put_strike', 0):,} PE indicates strong institutional support defending the market.",
-            "invalidation": f"Nifty Spot breaking below ₹{derivatives_data.get('max_put_strike', 0):,}"
+            "invalidation": f"Nifty Spot breaking below ₹{derivatives_data.get('max_put_strike', 0):,}",
+            "rating_data": rating_data
         }
     elif pcr <= 0.80 or sentiment_score <= -25:
         return {
@@ -465,7 +595,8 @@ def detect_options_pressure_buildup(derivatives_data: dict) -> dict:
             "pcr_desc": "Heavy Call Writing (Bearish Resistance Capping)",
             "vix_desc": "Rising Volatility Risk",
             "reason": f"Massive Call writing buildup at {derivatives_data.get('max_call_strike', 0):,} CE indicates strong resistance overhead capping price advances.",
-            "invalidation": f"Nifty Spot breaking above ₹{derivatives_data.get('max_call_strike', 0):,}"
+            "invalidation": f"Nifty Spot breaking above ₹{derivatives_data.get('max_call_strike', 0):,}",
+            "rating_data": rating_data
         }
     else:
         return {
@@ -478,41 +609,26 @@ def detect_options_pressure_buildup(derivatives_data: dict) -> dict:
             "pcr_desc": "Balanced Put & Call OI",
             "vix_desc": "Rangebound Volatility",
             "reason": f"Options chain exhibits balanced OI between Put support at {derivatives_data.get('max_put_strike', 0):,} and Call resistance at {derivatives_data.get('max_call_strike', 0):,}.",
-            "invalidation": f"Nifty Spot breaking either {derivatives_data.get('max_put_strike', 0):,} or {derivatives_data.get('max_call_strike', 0):,}"
+            "invalidation": f"Nifty Spot breaking either {derivatives_data.get('max_put_strike', 0):,} or {derivatives_data.get('max_call_strike', 0):,}",
+            "rating_data": rating_data
         }
 
 def format_telegram_derivatives_alert(derivatives_data: dict) -> str:
-    pressure = detect_options_pressure_buildup(derivatives_data)
+    """
+    Formats an ultra-concise, high-signal Telegram alert delivering strictly the
+    1-10 strength rating (Bull or Bear) and conviction.
+    """
+    rating_data = calculate_derivatives_strength_rating(derivatives_data)
     timestamp = derivatives_data.get("last_updated_time") or datetime.datetime.now().strftime("%I:%M %p")
-    
-    nifty_spot = derivatives_data.get("nifty_spot", 24850.0) or 24850.0
-    gift_nifty = derivatives_data.get("gift_nifty", 24895.0) or 24895.0
-    pcr = derivatives_data.get("pcr", 1.15) or 1.15
-    india_vix = derivatives_data.get("india_vix", 13.2) or 13.2
-    max_call = derivatives_data.get("max_call_strike", 25000) or 25000
-    max_put = derivatives_data.get("max_put_strike", 24800) or 24800
+    bias_word = "BULLISH" if rating_data["bias"] == "BULL" else "BEARISH" if rating_data["bias"] == "BEAR" else "NEUTRAL"
 
-    msg = f"""{pressure['header_emoji']} <b>NSE DERIVATIVES ALERT: {pressure['title']}</b>
---------------------------------------------------
-🎯 <b>Market Bias:</b> {pressure['bias']}
-🔥 <b>Pressure Side:</b> <b>{pressure['side_name']}</b>
-📊 <b>Nifty Spot:</b> ₹{nifty_spot:,.2f}
-🚀 <b>GIFT Nifty:</b> ₹{gift_nifty:,.2f} ({pressure['basis_text']})
-
---------------------------------------------------
-📈 <b>OPTIONS CHAIN METRICS (ZERODHA LIVE)</b>
-• <b>Put-Call Ratio (PCR):</b> <b>{pcr}</b> ({pressure['pcr_desc']})
-• <b>India VIX:</b> {india_vix} ({pressure['vix_desc']})
-• <b>Heavy Put Support:</b> ₹{max_put:,} PE
-• <b>Heavy Call Resistance:</b> ₹{max_call:,} CE
-
---------------------------------------------------
-💡 <b>ANALYST KEY INSIGHT</b>
-<i>{pressure['reason']}</i>
-
---------------------------------------------------
-🛡️ <b>Invalidation Level:</b> {pressure['invalidation']}
-⏰ <b>Timestamp:</b> {timestamp} | ⚡ <i>Zerodha API Engine</i>"""
+    msg = (
+        f"{rating_data['header_emoji']} <b>NSE DERIVATIVES: {rating_data['rating']}/10 {bias_word} {rating_data['emoji']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>Strength Rating:</b> <b>{rating_data['rating']} / 10</b> ({rating_data['conviction']})\n"
+        f"📊 <code>[{rating_data['bar']}]</code>\n"
+        f"⏰ {timestamp} | ⚡ <i>Zerodha Live Engine</i>"
+    )
 
     return msg
 
@@ -567,20 +683,19 @@ def send_telegram_derivatives_alert(derivatives_data: dict = None, force_send: b
         }
         
     try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": tg_text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }
-        res = requests.post(url, json=payload, timeout=10)
-        if res.status_code == 200:
+        from scripts.chart_generator import send_telegram_chart_alert
+        target_sym = derivatives_data.get("symbol") or derivatives_data.get("ticker") or "NIFTY 50"
+        res = send_telegram_chart_alert(
+            symbol=target_sym,
+            message_text=tg_text,
+            parse_mode="HTML"
+        )
+        if res.get("sent"):
             print("[TELEGRAM] Successfully dispatched Options Pressure Buildup alert!")
             return {"status": "success", "sent": True, "sample_telegram_text": tg_text}
         else:
-            print(f"[TELEGRAM] Failed to send Telegram alert: HTTP {res.status_code} - {res.text}")
-            return {"status": "error", "sent": False, "error": res.text, "sample_telegram_text": tg_text}
+            print(f"[TELEGRAM] Failed to send Telegram alert: {res.get('error') or res.get('message')}")
+            return {"status": "error", "sent": False, "error": str(res.get('error')), "sample_telegram_text": tg_text}
     except Exception as e:
         print(f"[TELEGRAM] Exception while sending Telegram alert: {e}")
         return {"status": "error", "sent": False, "error": str(e), "sample_telegram_text": tg_text}

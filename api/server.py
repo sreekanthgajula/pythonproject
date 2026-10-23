@@ -1714,6 +1714,55 @@ def trigger_evening_candidates_scan(background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=f"Failed to trigger evening candidate scan: {e}")
 
 
+@app.get("/api/chart/{symbol}")
+def get_chart_image_endpoint(symbol: str, trigger_price: Optional[float] = None):
+    """
+    Renders a live 5-minute candlestick chart with Volume, True Strength Index (TSI),
+    and On-Balance Volume (OBV) directly to an in-memory PNG buffer and returns it.
+    """
+    try:
+        from fastapi import Response
+        from scripts.chart_generator import generate_5min_chart_buffer
+        buf = generate_5min_chart_buffer(symbol=symbol, trigger_price=trigger_price)
+        if not buf:
+            raise HTTPException(status_code=404, detail=f"Could not generate chart for {symbol}. Insufficient 5m data.")
+        return Response(content=buf.getvalue(), media_type="image/png")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chart generation error: {e}")
+
+
+class TelegramAlertRequest(BaseModel):
+    symbol: str
+    message: Optional[str] = None
+    trigger_price: Optional[float] = None
+
+
+@app.post("/api/send-telegram-chart-alert")
+def send_telegram_chart_alert_endpoint(req: TelegramAlertRequest):
+    """
+    Dispatches a Telegram alert with the in-memory 5-minute chart screenshot attached.
+    """
+    try:
+        from scripts.chart_generator import send_telegram_chart_alert
+        clean_symbol = req.symbol.strip().upper().replace(".NS", "")
+        msg = req.message or (
+            f"⚡ <b>MANUAL BREAKOUT ALERT</b> - <b>{clean_symbol}</b>\n\n"
+            f"📈 <b>Trigger Price</b>: ₹{req.trigger_price or 0.0:,.2f}\n"
+            f"📊 <b>5m Candlestick Chart</b> attached with Volume, OBV, and TSI.\n"
+            f"⏰ <i>Dispatched from TradingAgents Engine</i>"
+        )
+        res = send_telegram_chart_alert(
+            symbol=clean_symbol,
+            message_text=msg,
+            trigger_price=req.trigger_price
+        )
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to dispatch Telegram chart alert: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)

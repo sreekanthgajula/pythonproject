@@ -176,22 +176,20 @@ def analyze_evening_pro_candidate(symbol: str, df: pd.DataFrame = None) -> dict:
 
 
 def get_all_watchlist_symbols() -> list:
-    """Retrieves all tracked stocks from MongoDB ratings or default watchlist."""
+    """Retrieves all tracked stocks from MongoDB user tables (monthly, weekly, daily, manual, darvas)."""
+    symbols = set()
     try:
         dm = DataManager()
-        syms = set()
-        for col_name in ["monthly_ratings", "weekly_ratings", "daily_ratings", "watchlist"]:
-            if col_name in dm.db.list_collection_names():
-                for doc in dm.db[col_name].find({}, {"symbol": 1, "ticker": 1}):
-                    s = doc.get("symbol") or doc.get("ticker")
-                    if s:
-                        syms.add(normalize_symbol(s))
-        if syms:
-            return sorted(list(syms))
+        for tf in ["monthly", "weekly", "daily", "manual", "darvas"]:
+            records = dm.get_stock_ratings(tf)
+            for r in records:
+                s = r.get("symbol") or r.get("ticker")
+                if s:
+                    symbols.add(normalize_symbol(s))
     except Exception as e:
         logger.warning(f"Could not load watchlist symbols from DB: {e}")
 
-    return ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "TATAMOTORS", "TATASTEEL", "BHARTIARTL", "AXISBANK", "LT", "BAJFINANCE", "MARUTI", "SUNPHARMA", "TITAN", "WIPRO", "HCLTECH"]
+    return sorted(list(symbols))
 
 
 def scan_and_rank_evening_pro_candidates() -> list:

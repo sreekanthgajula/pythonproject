@@ -38,12 +38,6 @@ try:
 except ImportError:
     KITE_AVAILABLE = False
 
-try:
-    import yfinance as yf
-    YFINANCE_AVAILABLE = True
-except ImportError:
-    YFINANCE_AVAILABLE = False
-
 def get_kite_client():
     """Retrieves authenticated Zerodha KiteConnect instance."""
     api_key = os.getenv("ZERODHA_API_KEY")
@@ -110,28 +104,7 @@ def analyze_5min_good_buyer_volume(symbol: str, kite=None) -> dict:
         except Exception as k_err:
             logger.warning(f"Zerodha historical 5m fetch notice for {clean_sym}: {k_err}")
 
-    # 2. Fallback to yfinance if Zerodha historical fetch failed
-    if len(candles) < 21 and YFINANCE_AVAILABLE:
-        try:
-            yf_sym = f"{clean_sym}.NS" if not clean_sym.endswith(".NS") else clean_sym
-            t = yf.Ticker(yf_sym)
-            df = t.history(period="5d", interval="5m")
-            if not df.empty and len(df) >= 21:
-                candles = []
-                for idx, row in df.iterrows():
-                    candles.append({
-                        "date": idx,
-                        "open": float(row["Open"]),
-                        "high": float(row["High"]),
-                        "low": float(row["Low"]),
-                        "close": float(row["Close"]),
-                        "volume": int(row["Volume"])
-                    })
-                data_source = "YFINANCE_FALLBACK"
-        except Exception as yf_err:
-            logger.warning(f"yfinance 5m fallback fetch failed for {clean_sym}: {yf_err}")
-
-    # If insufficient candles available
+    # If insufficient candles available from Zerodha
     if len(candles) < 21:
         return {
             "symbol": clean_sym,

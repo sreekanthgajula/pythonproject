@@ -436,7 +436,25 @@ def send_alert(
             f"⏰ *Candle Time*: `{formatted_time}`"
         )
         try:
-            if image_path and os.path.exists(image_path):
+            chart_buf = None
+            try:
+                from scripts.chart_generator import generate_5min_chart_buffer
+                chart_buf = generate_5min_chart_buffer(ticker, trigger_price=price)
+            except Exception as chart_err:
+                logger.debug(f"Could not generate in-memory 5m chart: {chart_err}")
+
+            if chart_buf is not None and len(chart_buf.getvalue()) > 0:
+                tg_url = f"https://api.telegram.org/bot{telegram_token}/sendPhoto"
+                tg_files = {
+                    "photo": (f"{ticker}_5m_breakout.png", chart_buf.getvalue(), "image/png")
+                }
+                tg_payload = {
+                    "chat_id": telegram_chat_id,
+                    "caption": tg_text,
+                    "parse_mode": "Markdown"
+                }
+                tg_resp = requests.post(tg_url, data=tg_payload, files=tg_files, timeout=15)
+            elif image_path and os.path.exists(image_path):
                 tg_url = f"https://api.telegram.org/bot{telegram_token}/sendPhoto"
                 with open(image_path, "rb") as photo_file:
                     tg_files = {
