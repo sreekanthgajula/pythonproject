@@ -80,6 +80,8 @@ except ImportError:
 
 # Attempt to load mplfinance if available
 try:
+    import matplotlib
+    matplotlib.use("Agg")
     import mplfinance as mpf
     MPLFINANCE_AVAILABLE = True
 except ImportError:

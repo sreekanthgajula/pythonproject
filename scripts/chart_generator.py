@@ -35,10 +35,12 @@ if str(project_root) not in sys.path:
 load_dotenv(dotenv_path=project_root / ".env")
 logger = logging.getLogger("ChartGenerator")
 
-# Try importing mplfinance & matplotlib
+# Try importing mplfinance & matplotlib with headless Agg backend
 try:
-    import mplfinance as mpf
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import mplfinance as mpf
     MPLFINANCE_AVAILABLE = True
 except ImportError:
     MPLFINANCE_AVAILABLE = False
@@ -72,6 +74,76 @@ def get_kite_client() -> Optional["KiteConnect"]:
     return None
 
 
+_INDEX_FUTURES_MAP = {
+    "NIFTY 50": "NIFTY",
+    "NIFTY": "NIFTY",
+    "NIFTY_50": "NIFTY",
+    "NSE:NIFTY 50": "NIFTY",
+    "BANKNIFTY": "BANKNIFTY",
+    "NIFTY BANK": "BANKNIFTY",
+    "NSE:NIFTY BANK": "BANKNIFTY",
+    "FINNIFTY": "FINNIFTY",
+    "NIFTY FIN SERVICE": "FINNIFTY"
+}
+
+_FUTURES_TOKEN_CACHE: Dict[str, Tuple[int, Any]] = {}
+
+
+def get_near_month_future_token(index_name: str, kite: Optional["KiteConnect"] = None) -> Optional[int]:
+    """
+    Finds the active near-month futures instrument token for an index (e.g. NIFTY, BANKNIFTY) in NFO.
+    First checks local cached instruments table, then queries Zerodha API if needed.
+    Caches the result for the current day to avoid repeatedly downloading NFO instruments.
+    """
+    global _FUTURES_TOKEN_CACHE
+    today = datetime.now().date()
+    if index_name in _FUTURES_TOKEN_CACHE:
+        token, cached_date = _FUTURES_TOKEN_CACHE[index_name]
+        if cached_date == today:
+            return token
+
+    # 1. Check local master instruments cache first (fast & reliable)
+    try:
+        from tradingagents.dataflows.zerodha import _get_instruments_df
+        inst_df = _get_instruments_df()
+        if inst_df is not None and not inst_df.empty:
+            futs = inst_df[
+                (inst_df["name"] == index_name) &
+                (inst_df["instrument_type"] == "FUT") &
+                (pd.to_datetime(inst_df["expiry"]).dt.date >= today)
+            ]
+            if not futs.empty:
+                near_fut = futs.sort_values("expiry").iloc[0]
+                token = int(near_fut["instrument_token"])
+                _FUTURES_TOKEN_CACHE[index_name] = (token, today)
+                logger.info(f"Resolved active near-month future for {index_name} via local cache: {near_fut['tradingsymbol']} (token: {token})")
+                return token
+    except Exception as cache_err:
+        logger.debug(f"Could not read local instruments cache for {index_name}: {cache_err}")
+
+    # 2. Fallback to kite.instruments("NFO")
+    if kite:
+        try:
+            instruments = kite.instruments("NFO")
+            if instruments:
+                df = pd.DataFrame(instruments)
+                futs = df[
+                    (df["name"] == index_name) &
+                    (df["instrument_type"] == "FUT") &
+                    (pd.to_datetime(df["expiry"]).dt.date >= today)
+                ]
+                if not futs.empty:
+                    near_fut = futs.sort_values("expiry").iloc[0]
+                    token = int(near_fut["instrument_token"])
+                    _FUTURES_TOKEN_CACHE[index_name] = (token, today)
+                    logger.info(f"Resolved active near-month future for {index_name} via Kite NFO: {near_fut['tradingsymbol']} (token: {token})")
+                    return token
+        except Exception as e:
+            logger.warning(f"Could not resolve futures token for {index_name} via Kite: {e}")
+
+    return None
+
+
 def fetch_5min_candles_zerodha(
     symbol: str,
     days: int = 5,
@@ -80,6 +152,8 @@ def fetch_5min_candles_zerodha(
     """
     Fetches 5-minute OHLCV historical candles strictly from Zerodha Kite Connect API.
     Does NOT use yfinance (adheres to Zerodha market data rule).
+    For spot indices (such as NIFTY 50), seamlessly maps corresponding near-month Futures
+    5-minute trading volume so Volume and OBV render accurately on the chart.
     """
     clean_sym = symbol.strip().upper().replace(".NS", "")
     kite = kite or get_kite_client()
@@ -122,6 +196,37 @@ def fetch_5min_candles_zerodha(
             df[col] = df[col].astype(float)
         df["Volume"] = df["Volume"].astype(int)
 
+        # For spot indices (e.g. NIFTY 50, BANKNIFTY), Zerodha returns Volume as 0 because the index itself does not trade.
+        # We automatically map the 5-minute traded volume from the near-month active futures contract.
+        fut_index_name = _INDEX_FUTURES_MAP.get(clean_sym)
+        if not fut_index_name and df["Volume"].sum() == 0:
+            for k, v in _INDEX_FUTURES_MAP.items():
+                if k in clean_sym:
+                    fut_index_name = v
+                    break
+
+        if fut_index_name and kite:
+            try:
+                fut_token = get_near_month_future_token(fut_index_name, kite)
+                if fut_token:
+                    raw_fut_candles = kite.historical_data(
+                        instrument_token=fut_token,
+                        from_date=from_date.strftime("%Y-%m-%d"),
+                        to_date=to_date.strftime("%Y-%m-%d"),
+                        interval="5minute"
+                    )
+                    if raw_fut_candles:
+                        fut_df = pd.DataFrame(raw_fut_candles)
+                        fut_df["date"] = pd.to_datetime(fut_df["date"]).dt.tz_localize(None)
+                        fut_vol_map = fut_df.set_index("date")["volume"]
+                        aligned_vol = pd.Series(df.index.map(fut_vol_map), index=df.index).fillna(0).astype(int)
+                        if aligned_vol.sum() > 0:
+                            df["Volume"] = aligned_vol.values
+                            df["Volume_Source"] = f"{fut_index_name} FUT"
+                            logger.info(f"Successfully mapped {aligned_vol.sum():,} total Futures volume to {clean_sym} spot candles.")
+            except Exception as fut_err:
+                logger.warning(f"Failed to fetch futures volume for {clean_sym}: {fut_err}")
+
         return df
     except Exception as e:
         logger.error(f"Error fetching 5m historical data from Zerodha for {clean_sym}: {e}")
@@ -134,6 +239,7 @@ def calculate_chart_indicators(df: pd.DataFrame) -> pd.DataFrame:
       1. On-Balance Volume (OBV) and OBV 20-period EMA
       2. True Strength Index (TSI: 13, 25) and TSI Signal Line (13) + Zero Line
       3. 9-period and 21-period Exponential Moving Averages on Close price
+      4. 20-period Volume Simple Moving Average (Vol_SMA20)
     """
     if df.empty or len(df) < 2:
         return df
@@ -144,14 +250,17 @@ def calculate_chart_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out_df["EMA_9"] = out_df["Close"].ewm(span=9, adjust=False).mean()
     out_df["EMA_21"] = out_df["Close"].ewm(span=21, adjust=False).mean()
 
-    # 2. On-Balance Volume (OBV)
+    # 2. Volume SMA 20
+    out_df["Vol_SMA20"] = out_df["Volume"].rolling(window=20, min_periods=1).mean()
+
+    # 3. On-Balance Volume (OBV)
     close_diff = out_df["Close"].diff()
     direction = np.where(close_diff > 0, 1, np.where(close_diff < 0, -1, 0))
     direction[0] = 0
     out_df["OBV"] = (direction * out_df["Volume"]).cumsum()
     out_df["OBV_EMA20"] = out_df["OBV"].ewm(span=20, adjust=False).mean()
 
-    # 3. True Strength Index (TSI)
+    # 4. True Strength Index (TSI)
     # Double smoothing of price change and absolute price change: slow=25, fast=13
     pc = out_df["Close"].diff()
     abs_pc = pc.abs()
@@ -235,6 +344,11 @@ def generate_5min_chart_buffer(
         markers[-1] = plot_df["Low"].iloc[-1] * 0.997
         ap.append(mpf.make_addplot(markers, type="scatter", marker="^", markersize=140, color="#00E676", panel=0))
 
+        # Panel 1 (Volume): Volume 20-period Moving Average line (Gold)
+        has_vol = plot_df["Volume"].sum() > 0
+        if has_vol and "Vol_SMA20" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["Vol_SMA20"], panel=1, color="#FFD54F", width=1.1))
+
         # Panel 2: True Strength Index (TSI: Blue, Signal: Orange, Zero: Gray dashed)
         ap.append(mpf.make_addplot(plot_df["TSI"], panel=2, color="#2979FF", width=1.6, ylabel="TSI (13,25,13)"))
         ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=2, color="#FF6D00", width=1.2))
@@ -261,7 +375,12 @@ def generate_5min_chart_buffer(
 
         last_close = plot_df["Close"].iloc[-1]
         last_time_str = plot_df.index[-1].strftime("%d-%b %H:%M")
-        chart_title = f"\n{clean_sym} (5m) • Close: ₹{last_close:,.2f} • {last_time_str} IST{title_suffix}"
+        last_vol = int(plot_df["Volume"].iloc[-1]) if "Volume" in plot_df.columns else 0
+        vol_src = str(plot_df["Volume_Source"].iloc[-1]) if "Volume_Source" in plot_df.columns and not plot_df.empty else ""
+        vol_info_str = f" • Vol: {last_vol:,}" if last_vol > 0 else ""
+        if last_vol > 0 and vol_src:
+            vol_info_str += f" ({vol_src})"
+        chart_title = f"\n{clean_sym} (5m) • Close: ₹{last_close:,.2f}{vol_info_str} • {last_time_str} IST{title_suffix}"
 
         # Render directly to in-memory buffer
         buffer = io.BytesIO()
@@ -286,6 +405,351 @@ def generate_5min_chart_buffer(
 
     except Exception as e:
         logger.error(f"Exception while generating in-memory chart for {clean_sym}: {e}", exc_info=True)
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return None
+
+
+def calculate_short_chart_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates technical indicators for 5-minute Morning Short chart plotting:
+      1. Intraday VWAP & +2 SD Upper Overextension Band (resets at 09:15 AM daily)
+      2. 20-period Volume Simple Moving Average (Vol_SMA20)
+      3. True Strength Index (TSI: 25, 13, 13) and TSI Signal Line + Zero Line
+      4. On-Balance Volume (OBV) and 9-period SMA
+    """
+    if df.empty or len(df) < 2:
+        return df
+
+    out_df = df.copy()
+
+    # 1. Day group for intraday VWAP
+    dates = out_df.index.date
+    out_df["TP"] = (out_df["High"] + out_df["Low"] + out_df["Close"]) / 3.0
+    out_df["TP_Vol"] = out_df["TP"] * out_df["Volume"]
+
+    cum_vol = out_df.groupby(dates)["Volume"].cumsum()
+    cum_tp_vol = out_df.groupby(dates)["TP_Vol"].cumsum()
+    out_df["VWAP"] = (cum_tp_vol / cum_vol.replace(0, np.nan)).fillna(out_df["Close"])
+
+    dev_sq_vol = out_df["Volume"] * ((out_df["TP"] - out_df["VWAP"]) ** 2)
+    out_df["Dev_Sq_Vol"] = dev_sq_vol
+    cum_dev_sq_vol = out_df.groupby(dates)["Dev_Sq_Vol"].cumsum()
+    out_df["VWAP_Var"] = cum_dev_sq_vol / cum_vol.replace(0, np.nan)
+    out_df["VWAP_SD"] = np.sqrt(out_df["VWAP_Var"].clip(lower=0)).fillna(0.0)
+    out_df["Upper_Band_2SD"] = out_df["VWAP"] + (2.0 * out_df["VWAP_SD"])
+
+    # 2. Volume SMA 20
+    out_df["Vol_SMA20"] = out_df["Volume"].rolling(window=20, min_periods=1).mean()
+
+    # 3. On-Balance Volume (OBV)
+    close_diff = out_df["Close"].diff()
+    direction = np.where(close_diff > 0, 1, np.where(close_diff < 0, -1, 0))
+    direction[0] = 0
+    out_df["OBV"] = (direction * out_df["Volume"]).cumsum()
+    out_df["OBV_SMA9"] = out_df["OBV"].rolling(window=9, min_periods=1).mean()
+
+    # 4. True Strength Index (TSI 25, 13, 13)
+    pc = out_df["Close"].diff()
+    abs_pc = pc.abs()
+    pc_ema_slow = pc.ewm(span=25, min_periods=1, adjust=False).mean()
+    pc_ema_fast = pc_ema_slow.ewm(span=13, min_periods=1, adjust=False).mean()
+    abs_pc_ema_slow = abs_pc.ewm(span=25, min_periods=1, adjust=False).mean()
+    abs_pc_ema_fast = abs_pc_ema_slow.ewm(span=13, min_periods=1, adjust=False).mean()
+
+    abs_pc_safe = abs_pc_ema_fast.replace(0, np.nan)
+    out_df["TSI"] = (pc_ema_fast / abs_pc_safe).fillna(0.0)
+    out_df["TSI_Signal"] = out_df["TSI"].ewm(span=13, min_periods=1, adjust=False).mean().fillna(0.0)
+    out_df["Zero"] = 0.0
+
+    return out_df
+
+
+def generate_5min_short_chart_buffer(
+    symbol: str,
+    df: Optional[pd.DataFrame] = None,
+    entry_price: Optional[float] = None,
+    stop_loss: Optional[float] = None,
+    target_price: Optional[float] = None,
+    num_candles: int = 60,
+    kite: Optional["KiteConnect"] = None,
+    title_suffix: str = "",
+    stage_label: str = "SHORT"
+) -> Optional[io.BytesIO]:
+    """
+    Renders a specialized 5-minute candlestick chart for Morning Short Setups with:
+      - Intraday VWAP & +2 SD Upper Overextension Band
+      - Stop Loss (Red dashed) & Target (Green dashed) guidelines
+      - Reversal arrow marker at top
+      - Volume panel with 20-period Moving Average
+      - True Strength Index (TSI 25, 13, 13) panel with Signal & Zero lines
+      - On-Balance Volume (OBV) panel with 9-period SMA
+    directly into an in-memory buffer (io.BytesIO).
+    """
+    if not MPLFINANCE_AVAILABLE:
+        logger.error("mplfinance not installed, cannot generate short chart buffer.")
+        return None
+
+    clean_sym = symbol.strip().upper().replace(".NS", "")
+
+    # Fetch 5-minute candles from Zerodha if not provided
+    if df is None or df.empty:
+        df = fetch_5min_candles_zerodha(clean_sym, days=5, kite=kite)
+
+    if df.empty or len(df) < 15:
+        logger.warning(f"Insufficient candle data ({len(df)} candles) to generate short chart for {clean_sym}.")
+        return None
+
+    try:
+        # Calculate specialized short indicators on full dataset for warmup
+        full_df = calculate_short_chart_indicators(df)
+
+        # Slice the most recent candles for display
+        plot_df = full_df.tail(num_candles).copy()
+
+        # Build addplots list
+        ap = []
+
+        # Panel 0 (Price Chart): VWAP (Gold) & +2 SD Upper Band (Magenta/Pink dashed)
+        if "VWAP" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["VWAP"], panel=0, color="#FFD700", width=1.4))
+        if "Upper_Band_2SD" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["Upper_Band_2SD"], panel=0, color="#FF4081", width=1.2, linestyle="--"))
+
+        # Panel 0 guideline for Stop Loss
+        if stop_loss and stop_loss > 0:
+            sl_series = pd.Series(float(stop_loss), index=plot_df.index)
+            ap.append(mpf.make_addplot(sl_series, panel=0, color="#FF1744", width=1.2, linestyle="--"))
+
+        # Panel 0 guideline for Target Price
+        if target_price and target_price > 0:
+            tgt_series = pd.Series(float(target_price), index=plot_df.index)
+            ap.append(mpf.make_addplot(tgt_series, panel=0, color="#00E676", width=1.2, linestyle="--"))
+
+        # Panel 0 trigger marker arrow above latest candle high (Red downward arrow)
+        markers = [np.nan] * len(plot_df)
+        markers[-1] = plot_df["High"].iloc[-1] * 1.003
+        ap.append(mpf.make_addplot(markers, type="scatter", marker="v", markersize=140, color="#FF1744", panel=0))
+
+        # Panel 1 (Volume): Volume 20-period Moving Average line (Gold)
+        has_vol = plot_df["Volume"].sum() > 0
+        if has_vol and "Vol_SMA20" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["Vol_SMA20"], panel=1, color="#FFD54F", width=1.1))
+
+        # Panel 2: True Strength Index (TSI: Blue, Signal: Orange, Zero: Gray dashed)
+        ap.append(mpf.make_addplot(plot_df["TSI"], panel=2, color="#2979FF", width=1.6, ylabel="TSI (25,13,13)"))
+        ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=2, color="#FF6D00", width=1.2))
+        ap.append(mpf.make_addplot(plot_df["Zero"], panel=2, color="#90A4AE", width=0.8, linestyle="--"))
+
+        # Panel 3: On-Balance Volume (OBV: Purple, OBV SMA9: Gold dashed)
+        ap.append(mpf.make_addplot(plot_df["OBV"], panel=3, color="#AB47BC", width=1.6, ylabel="OBV"))
+        ap.append(mpf.make_addplot(plot_df["OBV_SMA9"], panel=3, color="#FDD835", width=1.0, linestyle="--"))
+
+        # Visual Styling (High-contrast dark trading terminal)
+        mc = mpf.make_marketcolors(
+            up="#26a69a",
+            down="#ef5350",
+            edge="inherit",
+            wick="inherit",
+            volume="inherit"
+        )
+        custom_style = mpf.make_mpf_style(
+            base_mpf_style="nightclouds",
+            marketcolors=mc,
+            gridcolor="#262B33",
+            gridstyle=":"
+        )
+
+        last_close = plot_df["Close"].iloc[-1]
+        last_time_str = plot_df.index[-1].strftime("%d-%b %H:%M")
+        last_vol = int(plot_df["Volume"].iloc[-1]) if "Volume" in plot_df.columns else 0
+        vol_info_str = f" • Vol: {last_vol:,}" if last_vol > 0 else ""
+        chart_title = f"\n{clean_sym} (5m) {stage_label} • Close: ₹{last_close:,.2f}{vol_info_str} • {last_time_str} IST{title_suffix}"
+
+        # Render directly to in-memory buffer
+        buffer = io.BytesIO()
+        mpf.plot(
+            plot_df,
+            type="candle",
+            volume=True,
+            addplot=ap,
+            title=chart_title,
+            style=custom_style,
+            panel_ratios=(5, 1.8, 2.2, 2.2),
+            figsize=(12, 8.5),
+            savefig=dict(fname=buffer, format="png", dpi=120, bbox_inches="tight")
+        )
+        buffer.seek(0)
+
+        # Release matplotlib figure memory
+        plt.close("all")
+
+        logger.info(f"Successfully generated in-memory 5m short chart for {clean_sym} ({len(buffer.getvalue())} bytes).")
+        return buffer
+
+    except Exception as e:
+        logger.error(f"Exception while generating in-memory short chart for {clean_sym}: {e}", exc_info=True)
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return None
+
+
+def generate_evening_pro_chart_buffer(
+    symbol: str,
+    df: Optional[pd.DataFrame] = None,
+    entry_price: Optional[float] = None,
+    stop_loss: Optional[float] = None,
+    target_price: Optional[float] = None,
+    pro_score: float = 0.0,
+    num_candles: int = 60,
+    kite: Optional["KiteConnect"] = None,
+    title_suffix: str = ""
+) -> Optional[io.BytesIO]:
+    """
+    Renders a specialized 5-minute candlestick chart for Evening Pro (BTST) Buying setups with:
+      - Price Chart with EMA 9 (Cyan), EMA 21 (Yellow), and Intraday VWAP (Gold)
+      - Entry Price (Green dashed), Target (+3% BTST, Cyan dashed), and Stop Loss (Red dashed)
+      - Upward trigger arrow marker under the closing candle low
+      - Volume panel with 20-period Moving Average
+      - True Strength Index (TSI: 13, 25) panel
+      - On-Balance Volume (OBV) panel
+    directly into an in-memory buffer (io.BytesIO).
+    """
+    if not MPLFINANCE_AVAILABLE:
+        logger.error("mplfinance not installed, cannot generate evening pro chart buffer.")
+        return None
+
+    clean_sym = symbol.strip().upper().replace(".NS", "")
+
+    # Fetch 5-minute candles from Zerodha if not provided
+    if df is None or df.empty:
+        df = fetch_5min_candles_zerodha(clean_sym, days=5, kite=kite)
+
+    if df.empty or len(df) < 15:
+        logger.warning(f"Insufficient candle data ({len(df)} candles) to generate evening pro chart for {clean_sym}.")
+        return None
+
+    try:
+        # Calculate indicators
+        full_df = calculate_chart_indicators(df)
+
+        # Intraday VWAP & EMA 50
+        dates = full_df.index.date
+        full_df["TP"] = (full_df["High"] + full_df["Low"] + full_df["Close"]) / 3.0
+        full_df["TP_Vol"] = full_df["TP"] * full_df["Volume"]
+        cum_vol = full_df.groupby(dates)["Volume"].cumsum()
+        cum_tp_vol = full_df.groupby(dates)["TP_Vol"].cumsum()
+        full_df["VWAP"] = (cum_tp_vol / cum_vol.replace(0, np.nan)).fillna(full_df["Close"])
+        full_df["EMA_50"] = full_df["Close"].ewm(span=50, adjust=False).mean()
+
+        # Supertrend (10, 3)
+        try:
+            from tradingagents.strategies.supertrend_strategy import supertrend as calc_st
+            norm_df = full_df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
+            st_line, st_dir = calc_st(norm_df, period=10, multiplier=3.0)
+            full_df["Supertrend"] = st_line.values
+            full_df["Supertrend_Dir"] = st_dir.values
+        except Exception:
+            pass
+
+        plot_df = full_df.tail(num_candles).copy()
+
+        # Build addplots
+        ap = []
+
+        # Panel 0: Supertrend, EMA 50, EMAs, and VWAP
+        if "Supertrend" in plot_df.columns:
+            st_color = "#00E676" if plot_df["Supertrend_Dir"].iloc[-1] == 1 else "#FF1744"
+            ap.append(mpf.make_addplot(plot_df["Supertrend"], panel=0, color=st_color, width=1.6, linestyle="-"))
+        if "EMA_50" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["EMA_50"], panel=0, color="#FF9100", width=1.2, linestyle="-."))
+        if "EMA_9" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["EMA_9"], panel=0, color="#00E5FF", width=1.0))
+        if "VWAP" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["VWAP"], panel=0, color="#FFD600", width=1.2, linestyle=":"))
+
+        # Guideline: Entry Price (Green dashed)
+        if entry_price and entry_price > 0:
+            entry_series = pd.Series(float(entry_price), index=plot_df.index)
+            ap.append(mpf.make_addplot(entry_series, panel=0, color="#00E676", width=1.1, linestyle="--"))
+
+        # Guideline: Target Price (+3% BTST, Cyan dashed)
+        if target_price and target_price > 0:
+            tgt_series = pd.Series(float(target_price), index=plot_df.index)
+            ap.append(mpf.make_addplot(tgt_series, panel=0, color="#00B0FF", width=1.2, linestyle="--"))
+
+        # Guideline: Stop Loss (Red dashed)
+        if stop_loss and stop_loss > 0:
+            sl_series = pd.Series(float(stop_loss), index=plot_df.index)
+            ap.append(mpf.make_addplot(sl_series, panel=0, color="#FF1744", width=1.2, linestyle="--"))
+
+        # Upward trigger arrow marker under latest candle low
+        markers = [np.nan] * len(plot_df)
+        markers[-1] = plot_df["Low"].iloc[-1] * 0.997
+        ap.append(mpf.make_addplot(markers, type="scatter", marker="^", markersize=140, color="#00E676", panel=0))
+
+        # Panel 1: Volume with SMA20
+        has_vol = plot_df["Volume"].sum() > 0
+        if has_vol and "Vol_SMA20" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["Vol_SMA20"], panel=1, color="#FFD54F", width=1.1))
+
+        # Panel 2: TSI
+        if "TSI" in plot_df.columns and "TSI_Signal" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["TSI"], panel=2, color="#2979FF", width=1.6, ylabel="TSI (13,25,13)"))
+            ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=2, color="#FF6D00", width=1.2))
+            ap.append(mpf.make_addplot(plot_df["Zero"], panel=2, color="#90A4AE", width=0.8, linestyle="--"))
+
+        # Panel 3: OBV
+        if "OBV" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["OBV"], panel=3, color="#AB47BC", width=1.6, ylabel="OBV"))
+            if "OBV_EMA20" in plot_df.columns:
+                ap.append(mpf.make_addplot(plot_df["OBV_EMA20"], panel=3, color="#FDD835", width=1.0, linestyle="--"))
+
+        # High-contrast styling
+        mc = mpf.make_marketcolors(
+            up="#26a69a",
+            down="#ef5350",
+            edge="inherit",
+            wick="inherit",
+            volume="inherit"
+        )
+        custom_style = mpf.make_mpf_style(
+            base_mpf_style="nightclouds",
+            marketcolors=mc,
+            gridcolor="#262B33",
+            gridstyle=":"
+        )
+
+        last_close = plot_df["Close"].iloc[-1]
+        last_time_str = plot_df.index[-1].strftime("%d-%b %H:%M")
+        last_vol = int(plot_df["Volume"].iloc[-1]) if "Volume" in plot_df.columns else 0
+        score_str = f" • BTST Score: {pro_score:.1f}/100" if pro_score > 0 else ""
+        chart_title = f"\n{clean_sym} (5m) [BTST PRO BUY]{score_str} • Close: ₹{last_close:,.2f} • {last_time_str} IST{title_suffix}"
+
+        buffer = io.BytesIO()
+        mpf.plot(
+            plot_df,
+            type="candle",
+            volume=True,
+            addplot=ap,
+            title=chart_title,
+            style=custom_style,
+            panel_ratios=(5, 1.8, 2.2, 2.2),
+            figsize=(12, 8.5),
+            savefig=dict(fname=buffer, format="png", dpi=120, bbox_inches="tight")
+        )
+        buffer.seek(0)
+        plt.close("all")
+
+        logger.info(f"Successfully generated in-memory 5m evening pro chart for {clean_sym} ({len(buffer.getvalue())} bytes).")
+        return buffer
+
+    except Exception as e:
+        logger.error(f"Exception while generating in-memory evening pro chart for {clean_sym}: {e}", exc_info=True)
         try:
             plt.close("all")
         except Exception:

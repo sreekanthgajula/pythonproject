@@ -212,6 +212,11 @@ def get_request_token_via_totp(user_id: str, password: str, api_key: str, twofa_
     # 2. Prompt user for TOTP if not provided
     if twofa_pin is None:
         import sys
+        if not sys.stdin or not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
+            raise ZerodhaNotConfiguredError(
+                f"Zerodha {twofa_type} required. Server is running in background/daemon mode. "
+                "Please authenticate using the Web UI (Connect Zerodha) or provide TOTP/App Code."
+            )
         print("\n" + "="*50)
         print("ZERODHA MFA / 2FA REQUIRED")
         print("="*50)
@@ -236,39 +241,49 @@ def get_request_token_via_totp(user_id: str, password: str, api_key: str, twofa_
     r = session.post(twofa_url, data=twofa_payload, headers=headers)
     res_data = r.json()
     
+    # If initial 2FA failed and twofa_type was app_code, try falling back to totp (or vice-versa)
     if res_data.get("status") != "success":
-        raise ValueError(f"2FA authentication failed: {res_data.get('message', r.text)}")
+        alt_type = "totp" if twofa_type == "app_code" else "app_code"
+        twofa_payload["twofa_type"] = alt_type
+        r_alt = session.post(twofa_url, data=twofa_payload, headers=headers)
+        res_data_alt = r_alt.json()
+        if res_data_alt.get("status") == "success":
+            res_data = res_data_alt
+    
+    if res_data.get("status") != "success":
+        fail_msg = res_data.get("message", r.text)
+        raise ValueError(f"2FA authentication failed: {fail_msg}. (Enter 6-digit App Code from Kite App or TOTP)")
         
     # 4. Get the request token from connect URL
     connect_url = f"https://kite.zerodha.com/connect/login?api_key={api_key}&v=3"
     request_token = None
     
     try:
-        r = session.get(connect_url, headers=headers, allow_redirects=True, timeout=15)
-        try:
-            res_json = r.json()
-            if isinstance(res_json, dict) and res_json.get("status") == "error":
-                raise ValueError(f"Zerodha API Error: {res_json.get('message', 'Invalid response')}")
-        except ValueError as v_err:
-            if "Zerodha API Error" in str(v_err):
-                raise v_err
-        except Exception:
-            pass
-
-        # Search for request_token across final URL and all redirect history URLs & Location headers
-        candidate_urls = [r.url]
-        for h in r.history:
-            candidate_urls.append(h.url)
-            loc = h.headers.get("Location")
-            if loc:
-                candidate_urls.append(loc)
+        import re
+        # First attempt non-redirecting GET to capture 302 Location header instantly
+        r = session.get(connect_url, headers=headers, allow_redirects=False, timeout=10)
+        loc = r.headers.get("Location") or ""
+        m = re.search(r"request_token=([a-zA-Z0-9]+)", loc)
+        if m:
+            request_token = m.group(1)
+            
+        if not request_token:
+            candidate_urls = [loc, r.url]
+            try:
+                r_full = session.get(connect_url, headers=headers, allow_redirects=True, timeout=10)
+                candidate_urls.append(r_full.url)
+                for h in r_full.history:
+                    candidate_urls.append(h.url)
+                    if h.headers.get("Location"):
+                        candidate_urls.append(h.headers.get("Location"))
+            except Exception as red_err:
+                candidate_urls.append(str(red_err))
                 
-        for u in candidate_urls:
-            parsed = urlparse(u)
-            params = parse_qs(parsed.query)
-            if "request_token" in params:
-                request_token = params["request_token"][0]
-                break
+            for u in candidate_urls:
+                m_sub = re.search(r"request_token=([a-zA-Z0-9]+)", str(u))
+                if m_sub:
+                    request_token = m_sub.group(1)
+                    break
     except Exception as e:
         err_str = str(e)
         import re

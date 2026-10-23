@@ -147,6 +147,9 @@ def audit_and_restore_next_gtt_alerts(dry_run: bool = False) -> dict:
                     else:
                         restored_count += 1
 
+                    # Respect Zerodha Kite API rate limits (max 3 req/sec)
+                    time.sleep(0.3)
+
         except Exception as tf_err:
             logger.error(f"[GTT INTEGRITY MONITOR] Error auditing '{tf}' collection: {tf_err}")
 

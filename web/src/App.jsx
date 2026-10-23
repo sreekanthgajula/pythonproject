@@ -394,23 +394,30 @@ export default function App() {
     }
   };
 
-  // Submit TOTP Code to Connect to Zerodha API
+  // Submit TOTP / App Code to Connect to Zerodha API
   const handleConnectZerodha = async (e) => {
     if (e) e.preventDefault();
     const cleanTotp = totpCode.trim();
     if (!cleanTotp || cleanTotp.length !== 6) {
-      alert('Please enter a valid 6-digit Zerodha TOTP code.');
+      alert('Please enter a valid 6-digit Zerodha App Code or TOTP.');
       return;
     }
     setConnectingZerodha(true);
-    setZerodhaMsg('');
+    setZerodhaMsg('Connecting to Zerodha Kite API...');
     try {
       const res = await fetch(`${API_BASE_URL}/zerodha/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ totp: cleanTotp })
       });
-      const json = await res.json();
+      const text = await res.text();
+      let json = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch (parseErr) {
+        json = { detail: text || `HTTP ${res.status} ${res.statusText}` };
+      }
+
       if (res.ok && json.status === 'success') {
         setZerodhaMsg('✅ Zerodha API Connected Successfully! Access Token Active.');
         setTotpCode('');
@@ -423,8 +430,8 @@ export default function App() {
         alert(`Zerodha Connection Failed: ${errMsg}`);
       }
     } catch (err) {
-      setZerodhaMsg(`❌ Error: ${err}`);
-      alert(`Zerodha Connection Error: ${err}`);
+      setZerodhaMsg(`❌ Error: ${err.message || err}`);
+      alert(`Zerodha Connection Error: ${err.message || err}`);
     } finally {
       setConnectingZerodha(false);
     }
@@ -932,7 +939,7 @@ export default function App() {
             <input
               type="text"
               maxLength="6"
-              placeholder="Enter 6-digit TOTP Code"
+              placeholder="Enter 6-digit App Code / TOTP"
               value={totpCode}
               onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
               className="totp-input"
@@ -1193,7 +1200,7 @@ export default function App() {
               style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
             >
               <TrendingUp size={16} color="#10b981" />
-              <span>🚀 Evening Pro Buying</span>
+              <span>🚀 Supertrend Pro (BTST)</span>
               <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.evening_pro || 0}</span>
             </button>
           </nav>

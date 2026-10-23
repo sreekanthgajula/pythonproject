@@ -1,5 +1,10 @@
 import sys
 import os
+
+# Crucial: Set matplotlib headless backend before any other module imports to prevent Tkinter thread deadlock on Windows
+import matplotlib
+matplotlib.use("Agg")
+
 from pathlib import Path
 import threading
 import time
@@ -439,12 +444,23 @@ def run_gtt_audit_loop():
 
 def run_derivatives_alert_monitor_loop():
     """
-    Background daemon loop running every 5 minutes.
-    Fetches live Zerodha options chain data, analyzes PCR, GIFT Nifty basis, VIX, and Strike OI,
-    and automatically triggers Telegram alerts for STRONG BULL / STRONG BEAR setups before major moves.
+    Background daemon loop running every 180 seconds.
+    1. Monitors 5m Spot Nifty Candles and triggers automated Weekly CE/PE Option Buyer Telegram Alerts
+       with ATM strike, option LTP, and 5m candlestick chart.
+    2. Fetches live Zerodha options chain data and updates macro PCR / Speedometer analytics.
     """
     time.sleep(15)
     while True:
+        # 1. Two-Stage Weekly Option Buyer Scanner (Stage 1 Early Breakout & Stage 2 Confirmation)
+        try:
+            from scripts.nifty_derivatives_breakout_alert import check_and_trigger_spot_index_breakout
+            res = check_and_trigger_spot_index_breakout()
+            if res.get("alert_sent"):
+                print(f"[DERIVATIVES-LOOP] ⚡ Dispatched {res.get('count', 1)} Two-Stage Option Buyer alert(s) to Telegram!")
+        except Exception as e:
+            print(f"[DERIVATIVES-LOOP] Two-stage option scanner note: {e}")
+
+        # 2. Macro Options Chain & Speedometer Sync
         try:
             from scripts.fetch_derivatives_data import analyze_nse_derivatives, check_and_trigger_oi_pressure_alert
             data = analyze_nse_derivatives(force_grok=False, force_refresh=True)
@@ -452,7 +468,95 @@ def run_derivatives_alert_monitor_loop():
                 check_and_trigger_oi_pressure_alert(data)
         except Exception as e:
             print(f"[DERIVATIVES-LOOP] Background options alert loop note: {e}")
-        time.sleep(300)
+
+        time.sleep(180)
+
+
+def run_morning_short_monitor_loop():
+    """
+    Timezone-synchronized Morning Short & VWAP Reversion monitor loop.
+    Active Window: 09:15 AM - 11:30 AM IST (Mon-Fri)
+    Sydney Window: ~02:45 PM - 05:00 PM AEDT / ~01:45 PM - 04:00 PM AEST
+    Runs every 5 minutes (300s) during the active morning window.
+    """
+    time.sleep(25)
+    print("[SHORT-LOOP] Automated Morning Short & VWAP Reversion monitor loop started (IST/Sydney Synchronized).")
+    _last_active_state = None
+    _idle_counter = 0
+
+    while True:
+        try:
+            from tradingagents.market_timing import is_morning_short_window, format_dual_timezone_stamp
+            is_active, status_desc = is_morning_short_window()
+
+            if is_active != _last_active_state:
+                _last_active_state = is_active
+                time_str = format_dual_timezone_stamp()
+                if is_active:
+                    print(f"[SHORT-LOOP] 🌅 Morning Short Session ACTIVATED ({time_str}). Scanning every 5m.")
+                else:
+                    print(f"[SHORT-LOOP] ⏸️ Morning Short Session IDLE ({status_desc}). Next morning window: 09:15 AM IST.")
+
+            if is_active:
+                from scripts.morning_short_scanner import scan_and_rank_short_candidates
+                res = scan_and_rank_short_candidates(send_telegram=True)
+                if res:
+                    triggers = [r for r in res if r.get("is_short_candidate")]
+                    if triggers:
+                        print(f"[SHORT-LOOP] 🚨 Evaluated {len(res)} stocks, detected {len(triggers)} short trigger(s)!")
+                time.sleep(300)
+            else:
+                _idle_counter += 1
+                if _idle_counter % 30 == 0:
+                    print(f"[SHORT-LOOP] [STATUS] {status_desc}")
+                time.sleep(60)
+        except Exception as e:
+            print(f"[SHORT-LOOP] Background short monitor note: {e}")
+            time.sleep(60)
+
+
+def run_evening_pro_monitor_loop():
+    """
+    Timezone-synchronized Evening Professional Buying (BTST) monitor loop.
+    Active Window: 02:30 PM - 03:30 PM IST (Mon-Fri)
+    Sydney Window: ~08:00 PM - 09:00 PM AEDT / ~07:00 PM - 08:00 PM AEST
+    Runs every 5 minutes (300s) during the active evening window to capture
+    day-end institutional accumulation and high-conviction BTST setups before market close.
+    """
+    time.sleep(30)
+    print("[EVENING-PRO-LOOP] Automated Evening Pro Buying (BTST) monitor loop started (IST/Sydney Synchronized).")
+    _last_active_state = None
+    _idle_counter = 0
+
+    while True:
+        try:
+            from tradingagents.market_timing import is_evening_pro_window, format_dual_timezone_stamp
+            is_active, status_desc = is_evening_pro_window()
+
+            if is_active != _last_active_state:
+                _last_active_state = is_active
+                time_str = format_dual_timezone_stamp()
+                if is_active:
+                    print(f"[EVENING-PRO-LOOP] 🌆 Evening BTST Session ACTIVATED ({time_str}). Scanning every 5m.")
+                else:
+                    print(f"[EVENING-PRO-LOOP] ⏸️ Evening BTST Session IDLE ({status_desc}). Next evening window: 02:30 PM IST.")
+
+            if is_active:
+                from scripts.evening_pro_scanner import scan_and_rank_evening_pro_candidates
+                res = scan_and_rank_evening_pro_candidates(send_telegram=True)
+                if res:
+                    pro_buys = [r for r in res if r.get("is_pro_buying") or r.get("pro_buying_score", 0.0) >= 50.0]
+                    print(f"[EVENING-PRO-LOOP] ✅ Evaluated {len(res)} stocks, found {len(pro_buys)} BTST accumulation candidates!")
+                time.sleep(300)
+            else:
+                _idle_counter += 1
+                if _idle_counter % 30 == 0:
+                    print(f"[EVENING-PRO-LOOP] [STATUS] {status_desc}")
+                time.sleep(60)
+        except Exception as e:
+            print(f"[EVENING-PRO-LOOP] Background evening pro monitor note: {e}")
+            time.sleep(60)
+
 
 
 def run_paper_trading_loop():
@@ -547,6 +651,12 @@ def startup_event():
     # Start automated 5-minute derivatives options pressure alert loop
     threading.Thread(target=run_derivatives_alert_monitor_loop, daemon=True).start()
     print("[DERIVATIVES-LOOP] Automated 5-minute options pressure alert monitor loop started.")
+    # Start automated 5-minute Morning Short & VWAP Reversion scanner loop
+    threading.Thread(target=run_morning_short_monitor_loop, daemon=True).start()
+    print("[SHORT-LOOP] Automated 5-minute Morning Short & VWAP Reversion monitor loop started.")
+    # Start automated 5-minute Evening Pro Buying (BTST) scanner loop
+    threading.Thread(target=run_evening_pro_monitor_loop, daemon=True).start()
+    print("[EVENING-PRO-LOOP] Automated 5-minute Evening Pro Buying (BTST) monitor loop started.")
     # Start automated 5-minute paper trading strategy engine loop
     threading.Thread(target=run_paper_trading_loop, daemon=True).start()
     print("[PAPER-LOOP] Automated 5-minute paper trading strategy engine loop started.")
@@ -709,8 +819,17 @@ def cancel_zerodha_gtt_alert(trigger_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cancel Zerodha GTT #{trigger_id}: {e}")
 
+_zerodha_status_cache = {
+    "timestamp": 0.0,
+    "data": None
+}
+
 @app.get("/api/zerodha/status")
-def get_zerodha_status():
+def get_zerodha_status(force: bool = False):
+    now = time.time()
+    if not force and _zerodha_status_cache["data"] and (now - _zerodha_status_cache["timestamp"] < 30.0):
+        return _zerodha_status_cache["data"]
+
     from tradingagents.dataflows.zerodha import get_zerodha_credentials, is_token_valid
     creds = get_zerodha_credentials()
     api_key = creds.get("api_key")
@@ -722,19 +841,24 @@ def get_zerodha_status():
     password = os.environ.get("ZERODHA_PASSWORD")
 
     if not api_key or not api_secret:
-        return {"configured": False, "status": "no_credentials"}
-        
-    valid = is_token_valid(api_key, access_token, api_url)
-    if valid:
-        return {"configured": True, "status": "valid"}
+        res = {"configured": False, "status": "no_credentials"}
     else:
-        if user_id and password:
-            return {"configured": True, "status": "expired"}
+        valid = is_token_valid(api_key, access_token, api_url)
+        if valid:
+            res = {"configured": True, "status": "valid"}
         else:
-            return {"configured": True, "status": "no_user_creds"}
+            if user_id and password:
+                res = {"configured": True, "status": "expired"}
+            else:
+                res = {"configured": True, "status": "no_user_creds"}
+
+    _zerodha_status_cache["timestamp"] = now
+    _zerodha_status_cache["data"] = res
+    return res
 
 @app.post("/api/zerodha/login")
 def post_zerodha_login(req: TotpRequest):
+    global _zerodha_status_cache
     from tradingagents.dataflows.zerodha import (
         get_zerodha_credentials,
         get_request_token_via_totp,
@@ -759,7 +883,11 @@ def post_zerodha_login(req: TotpRequest):
         
         access_token = _exchange_request_token(api_key, request_token, api_secret, api_url)
 
-        # Trigger automatic GTT next alert audit as soon as connected to Zerodha API
+        # Invalidate status cache so frontend sees active connection immediately
+        _zerodha_status_cache["timestamp"] = 0.0
+        _zerodha_status_cache["data"] = {"configured": True, "status": "valid"}
+
+        # Trigger automatic GTT next alert audit in background
         try:
             from scripts.gtt_next_alert_integrity_monitor import audit_and_restore_next_gtt_alerts
             threading.Thread(target=audit_and_restore_next_gtt_alerts, kwargs={"dry_run": False}, daemon=True).start()
@@ -1149,22 +1277,7 @@ def trigger_darvas_box_scan():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to scan Darvas Box breakouts: {e}")
 
-@app.get("/api/short-candidates")
-def get_short_candidates():
-    """Returns ranked list of high-probability morning short & reversal stock candidates descending by short score."""
-    try:
-        from data_manager import DataManager
-        dm = DataManager()
-        col = dm.db["short_candidates"]
-        cursor = col.find({}, {"_id": 0}).sort("short_probability_score", -1).limit(100)
-        docs = list(cursor)
-        return {
-            "status": "success",
-            "count": len(docs),
-            "data": docs
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch short candidates: {e}")
+# Note: GET /api/short-candidates is unified in the lower endpoints section
 
 @app.post("/api/short-candidates/scan")
 def trigger_short_candidates_scan():
@@ -1521,6 +1634,26 @@ def test_telegram_derivatives_alert():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to dispatch Telegram alert: {e}")
 
+@app.post("/api/derivatives/test-option-buyer-alert")
+def test_option_buyer_alert(direction: str = "BULLISH", spot_price: Optional[float] = None):
+    """
+    Triggers a test Weekly Option Buyer alert (BUY WEEKLY CE or BUY WEEKLY PE)
+    with ATM strike, option LTP, and 5m candlestick chart dispatched to Telegram.
+    """
+    try:
+        from scripts.nifty_derivatives_breakout_alert import send_nifty_breakout_telegram_alert
+        dir_clean = direction.strip().upper()
+        if dir_clean not in ["BULLISH", "BEARISH"]:
+            dir_clean = "BULLISH"
+        res = send_nifty_breakout_telegram_alert(
+            breakout_type=dir_clean,
+            spot_price=spot_price,
+            force_send=True
+        )
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to dispatch Option Buyer alert: {e}")
+
 @app.post("/api/stocks/{symbol}/reset-gtt")
 def reset_gtt_for_stock(symbol: str, timeframe: Optional[str] = None):
     """
@@ -1665,7 +1798,12 @@ def get_short_candidates_endpoint():
         dm = DataManager()
         col = dm.db["short_candidates"]
         candidates = list(col.find({}, {"_id": 0}).sort("short_probability_score", -1))
-        return {"status": "success", "count": len(candidates), "candidates": candidates}
+        return {
+            "status": "success",
+            "count": len(candidates),
+            "data": candidates,
+            "candidates": candidates
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch short candidates: {e}")
 
@@ -1673,7 +1811,7 @@ def get_short_candidates_endpoint():
 @app.post("/api/scan-short-candidates")
 def trigger_short_candidates_scan(background_tasks: BackgroundTasks):
     """
-    Triggers an asynchronous scan for morning shorting candidates (9:15 AM - 10:15 AM high volatility setup)
+    Triggers an asynchronous scan for morning shorting candidates (5-minute VWAP exhaustion & reversion setup)
     and updates MongoDB 'short_candidates'.
     """
     try:
@@ -1682,6 +1820,28 @@ def trigger_short_candidates_scan(background_tasks: BackgroundTasks):
         return {"status": "success", "message": "Morning short candidate scan initiated in background."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to trigger short candidate scan: {e}")
+
+
+@app.post("/api/short-candidates/{symbol}/alert")
+def trigger_single_short_candidate_alert(symbol: str):
+    """
+    Generates and dispatches a 5-minute candlestick chart + technical analysis alert to Telegram
+    for the specified short candidate symbol.
+    """
+    try:
+        from scripts.morning_short_scanner import analyze_morning_short_candidate, send_morning_short_telegram_alert
+        cand = analyze_morning_short_candidate(symbol)
+        if not cand:
+            raise HTTPException(status_code=404, detail=f"Could not analyze candidate for {symbol}")
+        res = send_morning_short_telegram_alert(cand, force=True)
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "result": res,
+            "candidate": cand
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send Telegram alert for {symbol}: {e}")
 
 
 @app.get("/api/evening-candidates")
@@ -1708,10 +1868,46 @@ def trigger_evening_candidates_scan(background_tasks: BackgroundTasks):
     """
     try:
         from scripts.evening_pro_scanner import scan_and_rank_evening_pro_candidates
-        background_tasks.add_task(scan_and_rank_evening_pro_candidates)
+        background_tasks.add_task(scan_and_rank_evening_pro_candidates, send_telegram=True)
         return {"status": "success", "message": "Evening professional buying candidate scan initiated in background."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to trigger evening candidate scan: {e}")
+
+
+@app.post("/api/evening-candidates/{symbol}/alert")
+def trigger_single_evening_candidate_alert(symbol: str):
+    """
+    Generates and dispatches a 5-minute candlestick chart + Supertrend Pro Buying (BTST) alert to Telegram
+    for the specified candidate symbol.
+    """
+    try:
+        from scripts.evening_pro_scanner import analyze_evening_pro_candidate, send_evening_pro_telegram_alert
+        cand = analyze_evening_pro_candidate(symbol)
+        if not cand:
+            raise HTTPException(status_code=404, detail=f"Could not analyze Supertrend candidate for {symbol}")
+        res = send_evening_pro_telegram_alert(cand, force=True)
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "result": res,
+            "candidate": cand
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send Telegram alert for {symbol}: {e}")
+
+
+
+@app.get("/api/market-timing")
+def get_market_timing_endpoint():
+    """
+    Returns live Indian Market (IST) and Sydney (AEST/AEDT) synchronized status,
+    including the active states and schedules for Morning Short and Evening Pro scanners.
+    """
+    try:
+        from tradingagents.market_timing import get_market_timing_summary
+        return get_market_timing_summary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch market timing: {e}")
 
 
 @app.get("/api/chart/{symbol}")

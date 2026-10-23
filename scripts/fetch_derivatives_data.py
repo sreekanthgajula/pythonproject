@@ -615,15 +615,18 @@ def detect_options_pressure_buildup(derivatives_data: dict) -> dict:
 
 def format_telegram_derivatives_alert(derivatives_data: dict) -> str:
     """
-    Formats an ultra-concise, high-signal Telegram alert delivering strictly the
-    1-10 strength rating (Bull or Bear) and conviction.
+    Formats a concise, high-signal Telegram alert delivering strictly the
+    1-10 strength rating (Bull or Bear), explicit Buyer Action, and conviction.
     """
     rating_data = calculate_derivatives_strength_rating(derivatives_data)
     timestamp = derivatives_data.get("last_updated_time") or datetime.datetime.now().strftime("%I:%M %p")
     bias_word = "BULLISH" if rating_data["bias"] == "BULL" else "BEARISH" if rating_data["bias"] == "BEAR" else "NEUTRAL"
+    action_text = "🚀 ACTION: BUY WEEKLY CE (CALL)" if rating_data["bias"] == "BULL" else "📉 ACTION: BUY WEEKLY PE (PUT)" if rating_data["bias"] == "BEAR" else "⚖️ RANGEBOUND SETUP"
 
     msg = (
         f"{rating_data['header_emoji']} <b>NSE DERIVATIVES: {rating_data['rating']}/10 {bias_word} {rating_data['emoji']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>{action_text}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Strength Rating:</b> <b>{rating_data['rating']} / 10</b> ({rating_data['conviction']})\n"
         f"📊 <code>[{rating_data['bar']}]</code>\n"
