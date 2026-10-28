@@ -426,14 +426,18 @@ Format output strictly as:
     res["rating_conviction"] = rating_data["conviction"]
     res["rating_bar"] = rating_data["bar"]
 
+    # Evaluate live 3-Confirmation Nifty Derivatives status (Futures OI Buildup + ATM Straddle Expansion + Price Action)
+    try:
+        from scripts.nifty_derivatives_breakout_alert import check_and_trigger_spot_index_breakout
+        three_conf_res = check_and_trigger_spot_index_breakout(kite=kite)
+        res["three_confirmation_status"] = three_conf_res.get("evaluation") or {"alert_triggered": False, "reason": three_conf_res.get("reason")}
+        if three_conf_res.get("evaluation") and three_conf_res["evaluation"].get("rating"):
+            res["rating_out_of_10"] = three_conf_res["evaluation"]["rating"]
+    except Exception as a_err:
+        print(f"[DERIVATIVES] Note on 3-confirmation evaluation: {a_err}")
+
     _DERIVATIVES_CACHE["zerodha_analysis"] = res
     _DERIVATIVES_CACHE["last_zerodha_fetch_time"] = now_ts
-    
-    # Auto-evaluate & dispatch Telegram Alert if strong Put/Call pressure buildup is detected
-    try:
-        check_and_trigger_oi_pressure_alert(res)
-    except Exception as a_err:
-        print(f"[DERIVATIVES] Note on background alert trigger: {a_err}")
 
     return res
 
@@ -636,103 +640,33 @@ def format_telegram_derivatives_alert(derivatives_data: dict) -> str:
     return msg
 
 def send_telegram_derivatives_alert(derivatives_data: dict = None, force_send: bool = False) -> dict:
-    if not derivatives_data:
-        derivatives_data = analyze_nse_derivatives(force_grok=False)
-        
-    if not derivatives_data.get("zerodha_connected") and not force_send:
-        # Mock mode if Zerodha isn't active
-        derivatives_data = {
-            "zerodha_connected": True,
-            "nifty_spot": 24850.0,
-            "gift_nifty": 24895.0,
-            "pcr": 1.35,
-            "india_vix": 13.20,
-            "max_call_strike": 25000,
-            "max_put_strike": 24800,
-            "sentiment_score": 45,
-            "day_verdict": "BULL DAY 🐂",
-            "last_updated_time": datetime.datetime.now().strftime("%I:%M %p")
-        }
-
-    tg_text = format_telegram_derivatives_alert(derivatives_data)
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    # STRICT DARVAS BOX 1% BREAKOUT FILTER:
-    if not force_send:
-        symbol = derivatives_data.get("symbol") or derivatives_data.get("ticker") or "NIFTY"
-        spot_price = derivatives_data.get("nifty_spot") or derivatives_data.get("price")
-        try:
-            from data_manager import is_telegram_darvas_breakout_allowed
-            is_allowed, filter_msg = is_telegram_darvas_breakout_allowed(symbol, spot_price)
-            if not is_allowed:
-                print(f"[TELEGRAM DARVAS FILTER] Skipped derivatives Telegram alert for {symbol}: {filter_msg}")
-                return {
-                    "status": "filtered",
-                    "sent": False,
-                    "reason": filter_msg,
-                    "sample_telegram_text": tg_text
-                }
-        except Exception as filter_err:
-            print(f"[TELEGRAM DARVAS FILTER] Error validating Darvas status for {symbol}: {filter_err}")
-
-    if not token or not chat_id:
-        print("[TELEGRAM] Credentials not configured in .env (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID). Mock alert generated.")
-        return {
-            "status": "mock_generated",
-            "sent": False,
-            "message": "Telegram credentials not set in .env file. Sample alert formatted successfully.",
-            "sample_telegram_text": tg_text
-        }
-        
-    try:
-        from scripts.chart_generator import send_telegram_chart_alert
-        target_sym = derivatives_data.get("symbol") or derivatives_data.get("ticker") or "NIFTY 50"
-        res = send_telegram_chart_alert(
-            symbol=target_sym,
-            message_text=tg_text,
-            parse_mode="HTML"
-        )
-        if res.get("sent"):
-            print("[TELEGRAM] Successfully dispatched Options Pressure Buildup alert!")
-            return {"status": "success", "sent": True, "sample_telegram_text": tg_text}
-        else:
-            print(f"[TELEGRAM] Failed to send Telegram alert: {res.get('error') or res.get('message')}")
-            return {"status": "error", "sent": False, "error": str(res.get('error')), "sample_telegram_text": tg_text}
-    except Exception as e:
-        print(f"[TELEGRAM] Exception while sending Telegram alert: {e}")
-        return {"status": "error", "sent": False, "error": str(e), "sample_telegram_text": tg_text}
-
-_PRESSURE_ALERT_STATE = {
-    "last_alert_type": None,
-    "last_alert_ts": 0
-}
-
-def check_and_trigger_oi_pressure_alert(derivatives_data: dict) -> dict:
     """
-    Evaluates derivatives options chain data during 5-minute cycles.
-    Dispatches a Telegram alert if a Strong Put or Call pressure buildup is detected and state has changed.
+    Delegates all Nifty Derivatives Telegram alerts strictly to the 3-Confirmation
+    Automated Engine (Futures OI Buildup + ATM Straddle Expansion + Price Action).
+    Never triggers a live alert if even one confirmation is missing.
     """
-    if not derivatives_data or not derivatives_data.get("zerodha_connected"):
-        return {"alert_sent": False, "reason": "Zerodha API disconnected"}
+    from scripts.nifty_derivatives_breakout_alert import (
+        check_and_trigger_spot_index_breakout,
+        send_nifty_breakout_telegram_alert,
+    )
+    if force_send:
+        direction = "BULLISH"
+        if derivatives_data and float(derivatives_data.get("sentiment_score", 0) or 0) < 0:
+            direction = "BEARISH"
+        return send_nifty_breakout_telegram_alert(breakout_type=direction, force_send=True)
+    return check_and_trigger_spot_index_breakout()
 
-    pressure = detect_options_pressure_buildup(derivatives_data)
-    pressure_type = pressure.get("pressure_type")
-    now_ts = time.time()
-    
-    last_type = _PRESSURE_ALERT_STATE.get("last_alert_type")
-    last_ts = _PRESSURE_ALERT_STATE.get("last_alert_ts", 0)
 
-    # Only alert on high-conviction pressure buildup (PUT_PRESSURE_BUILDUP or CALL_PRESSURE_BUILDUP)
-    if pressure_type in ["PUT_PRESSURE_BUILDUP", "CALL_PRESSURE_BUILDUP"]:
-        # Send if pressure state changed OR if more than 1 hour (3600s) has passed
-        if pressure_type != last_type or (now_ts - last_ts > 3600):
-            res = send_telegram_derivatives_alert(derivatives_data=derivatives_data, force_send=True)
-            _PRESSURE_ALERT_STATE["last_alert_type"] = pressure_type
-            _PRESSURE_ALERT_STATE["last_alert_ts"] = now_ts
-            return {"alert_sent": True, "pressure_type": pressure_type, "telegram_res": res}
-
-    return {"alert_sent": False, "pressure_type": pressure_type, "reason": "No new pressure shift"}
+def check_and_trigger_oi_pressure_alert(derivatives_data: dict = None) -> dict:
+    """
+    Evaluates the strict 3-Confirmation Nifty Derivatives Alert rules:
+      1. Futures OI Buildup (Long / Short Buildup above dynamic auto-threshold)
+      2. ATM Straddle Premium Expansion (Combined CE+PE expansion above dynamic auto-threshold)
+      3. Price Action (Breakout of N-bar swing high/low + strong body above dynamic auto-threshold)
+    Never triggers if even one confirmation is missing.
+    """
+    from scripts.nifty_derivatives_breakout_alert import check_and_trigger_spot_index_breakout
+    return check_and_trigger_spot_index_breakout()
 
 if __name__ == "__main__":
     res = analyze_nse_derivatives(force_grok=True)
