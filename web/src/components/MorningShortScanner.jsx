@@ -125,14 +125,16 @@ export default function MorningShortScanner() {
     .filter((c) => {
       if (selectedStage === 'STAGE 1') return c.stage === 'STAGE 1';
       if (selectedStage === 'STAGE 2') return c.stage === 'STAGE 2';
+      if (selectedStage === 'STAGE 3') return c.stage === 'STAGE 3';
       return true;
     })
     .filter((c) => (c.short_probability_score || 0) >= filterScore)
     .filter((c) => (c.symbol || '').toLowerCase().includes(searchQuery.toLowerCase().trim()))
-    .sort((a, b) => (b.short_probability_score || 0) - (a.short_probability_score || 0));
+    .sort((a, b) => (b.agents_debate_rating || (b.short_probability_score / 10) || 0) - (a.agents_debate_rating || (a.short_probability_score / 10) || 0));
 
   const stage1Count = candidates.filter(c => c.stage === 'STAGE 1').length;
   const stage2Count = candidates.filter(c => c.stage === 'STAGE 2').length;
+  const stage3Count = candidates.filter(c => c.stage === 'STAGE 3').length;
 
   return (
     <div className="morning-short-container">
@@ -245,6 +247,15 @@ export default function MorningShortScanner() {
           >
             <Zap size={13} />
             <span>Stage 2: VWAP Breakdown ({stage2Count})</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedStage('STAGE 3')}
+            className={`pill-btn ${selectedStage === 'STAGE 3' ? 'active' : ''}`}
+            style={selectedStage === 'STAGE 3' ? { background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)' } : {}}
+          >
+            <Crosshair size={13} />
+            <span>Stage 3: 15m ORB Short ({stage3Count})</span>
           </button>
 
           <div className="filter-label" style={{ marginLeft: '0.75rem' }}>
@@ -367,19 +378,33 @@ export default function MorningShortScanner() {
                               <span className="badge-stage-2">
                                 <Zap size={11} /> Stage 2 VWAP
                               </span>
+                            ) : stage === 'STAGE 3' ? (
+                              <span className="badge-stage-2" style={{ background: 'rgba(139, 92, 246, 0.22)', color: '#c4b5fd', borderColor: 'rgba(139, 92, 246, 0.45)' }}>
+                                <Crosshair size={11} /> Stage 3 ORB
+                              </span>
                             ) : (
                               <span className="badge-stage-watch">
-                                Watchlist
+                                Developing
                               </span>
                             )}
                           </div>
-                          <div className="score-subtitle">
-                            Conviction: <strong>{score.toFixed(1)} / 100</strong>
-                            {c.morning_runup_pct > 0 && (
-                              <span style={{ color: '#fda4af', marginLeft: '0.5rem' }}>
-                                (Peak: +{c.morning_runup_pct}%)
-                              </span>
-                            )}
+                          <div className="score-subtitle" style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px' }}>
+                            <div>
+                              Conviction: <strong>{score.toFixed(1)} / 100</strong>
+                              {c.morning_runup_pct > 0 && (
+                                <span style={{ color: '#fda4af', marginLeft: '0.5rem' }}>
+                                  (Peak: +{c.morning_runup_pct}%)
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'rgba(56, 189, 248, 0.14)', border: '1px solid rgba(56, 189, 248, 0.35)', borderRadius: '5px', padding: '2px 7px', width: 'fit-content', fontSize: '0.73rem', color: '#38bdf8', fontWeight: 700 }}>
+                              <span>🤖 Agents Debate Rating: {(c.agents_debate_rating ?? (score / 10)).toFixed(1)} / 10</span>
+                              {c.agents_debate_verdict && (
+                                <span style={{ fontSize: '0.67rem', color: '#e2e8f0', fontWeight: 600 }}>
+                                  ({c.agents_debate_verdict})
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>

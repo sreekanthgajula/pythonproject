@@ -122,7 +122,7 @@ export default function EveningProScanner() {
   const filteredCandidates = candidates
     .filter((c) => (c.pro_buying_score || 0) >= filterScore)
     .filter((c) => (c.symbol || '').toLowerCase().includes(searchQuery.toLowerCase().trim()))
-    .sort((a, b) => (b.pro_buying_score || 0) - (a.pro_buying_score || 0));
+    .sort((a, b) => (b.agents_debate_rating || (b.pro_buying_score / 10) || 0) - (a.agents_debate_rating || (a.pro_buying_score / 10) || 0));
 
   const formatReason = (rawReason, closePosPct) => {
     const closePct = closePosPct !== undefined && closePosPct !== null ? closePosPct : 0.0;
@@ -349,8 +349,18 @@ export default function EveningProScanner() {
                               </span>
                             ) : null}
                           </div>
-                          <div className="score-subtitle" style={{ marginTop: '0.25rem' }}>
-                            Supertrend Score: <strong style={{ color: score >= 75 ? '#34d399' : '#a7f3d0' }}>{score.toFixed(1)} / 100</strong>
+                          <div className="score-subtitle" style={{ marginTop: '0.25rem', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div>
+                              Supertrend Score: <strong style={{ color: score >= 75 ? '#34d399' : '#a7f3d0' }}>{score.toFixed(1)} / 100</strong>
+                            </div>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'rgba(16, 185, 129, 0.14)', border: '1px solid rgba(16, 185, 129, 0.38)', borderRadius: '5px', padding: '2px 7px', width: 'fit-content', fontSize: '0.73rem', color: '#34d399', fontWeight: 700 }}>
+                              <span>🤖 Agents Debate Rating: {(c.agents_debate_rating ?? (score / 10)).toFixed(1)} / 10</span>
+                              {c.agents_debate_verdict && (
+                                <span style={{ fontSize: '0.67rem', color: '#e2e8f0', fontWeight: 600 }}>
+                                  ({c.agents_debate_verdict})
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -410,6 +420,11 @@ export default function EveningProScanner() {
                               <Zap size={11} /> Red ➔ Green Flip
                             </span>
                           )}
+                          {c.swing_5d_breakout && (
+                            <span className="trigger-tag-pill" style={{ color: '#a78bfa', borderColor: 'rgba(167, 139, 250, 0.4)', background: 'rgba(167, 139, 250, 0.12)' }}>
+                              5D Swing Breakout
+                            </span>
+                          )}
                           {isAboveEma && (
                             <span className="trigger-tag-pill" style={{ color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.4)', background: 'rgba(56, 189, 248, 0.1)' }}>
                               Close &gt; EMA 50
@@ -417,15 +432,20 @@ export default function EveningProScanner() {
                           )}
                           {isVolPassed && (
                             <span className="trigger-tag-pill" style={{ color: '#fde047', borderColor: 'rgba(253, 224, 71, 0.4)', background: 'rgba(253, 224, 71, 0.1)' }}>
-                              <Flame size={11} /> Vol &gt; 1.2x SMA20
+                              <Flame size={11} /> Vol {c.volume_ratio ? `${c.volume_ratio}x` : '> 1.2x'} SMA20
+                            </span>
+                          )}
+                          {c.obv_bullish && c.tsi_bullish && (
+                            <span className="trigger-tag-pill" style={{ color: '#34d399', borderColor: 'rgba(52, 211, 153, 0.4)', background: 'rgba(52, 211, 153, 0.1)' }}>
+                              OBV &amp; TSI Bullish
                             </span>
                           )}
                         </div>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.25' }}>
-                          {formattedReason.main}
-                          {formattedReason.pct && (
-                            <span style={{ color: '#34d399', marginLeft: '0.25rem' }}>
-                              ({formattedReason.pct} of day range)
+                          {c.agents_debate_summary || formattedReason.main}
+                          {c.close_position_pct !== undefined && (
+                            <span style={{ color: '#34d399', marginLeft: '0.25rem', fontWeight: 600 }}>
+                              (Closed at {c.close_position_pct}% of range)
                             </span>
                           )}
                         </div>

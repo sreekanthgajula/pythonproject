@@ -680,6 +680,115 @@ def calculate_signal_rating_out_of_10(
     }
 
 
+def run_derivatives_agents_debate(
+    direction: str,
+    oi_change_pct: float,
+    oi_threshold_pct: float,
+    straddle_exp_pct: float,
+    straddle_threshold_pct: float,
+    body_ratio: float,
+    body_threshold_ratio: float,
+    breakout_distance_atr: float,
+    obv_aligned: bool,
+    tsi_aligned: bool,
+    adx_val: float = 25.0,
+    vol_surge_ratio: float = 1.5,
+    volatility_regime: str = "NORMAL_REGIME",
+) -> Dict[str, Any]:
+    """
+    Runs a 6-Agent Quantitative Multi-Agent Debate (100% Zerodha Data, $0 AI Cost)
+    BEFORE dispatching a Nifty Derivatives Telegram alert to judge how good the
+    alert is out of 10:
+      1. Institutional Flow & OI Analyst (evaluates Futures OI buildup & 5m volume surge)
+      2. Options Volatility & Straddle Analyst (evaluates ATM CE+PE expansion & regime)
+      3. Price Action & Momentum Analyst (evaluates Swing Breakout ATR, Body %, OBV & TSI)
+      4. Bull Researcher (argues upside/directional breakout conviction)
+      5. Bear / Trap Researcher (stress-tests whipsaw, ADX chop, or momentum divergence)
+      6. Chief Risk & Portfolio Judge (arbitrates Bull vs Bear debate -> final X.X / 10 rating)
+    """
+    is_bull = direction.upper().startswith("BULL")
+
+    # Agent 1: Institutional Flow & OI Analyst (0-10)
+    oi_multiple = abs(oi_change_pct) / max(0.01, oi_threshold_pct)
+    oi_agent_score = min(10.0, max(5.0, 6.2 + (oi_multiple - 1.0) * 2.2 + min(1.5, max(0.0, vol_surge_ratio - 1.0) * 1.1)))
+    oi_agent_score = round(oi_agent_score, 1)
+
+    # Agent 2: Options Volatility & Straddle Analyst (0-10)
+    strad_multiple = straddle_exp_pct / max(0.01, straddle_threshold_pct)
+    strad_agent_score = min(10.0, max(5.0, 6.2 + (strad_multiple - 1.0) * 2.4))
+    if volatility_regime == "LOW_VOL_SQUEEZE":
+        strad_agent_score = min(10.0, strad_agent_score + 0.5)  # Squeeze breakout bonus
+    strad_agent_score = round(strad_agent_score, 1)
+
+    # Agent 3: Price Action & Momentum Analyst (0-10)
+    body_multiple = body_ratio / max(0.1, body_threshold_ratio)
+    pa_base = 6.0 + (body_multiple - 1.0) * 3.0 + min(1.6, max(0.0, breakout_distance_atr) * 1.2)
+    if obv_aligned:
+        pa_base += 0.7
+    if tsi_aligned:
+        pa_base += 0.7
+    pa_agent_score = round(min(10.0, max(4.5, pa_base)), 1)
+
+    # Agent 4: Directional Pro-Breakout Researcher (Bull/Bear Lead)
+    pro_score = round((oi_agent_score * 0.38) + (strad_agent_score * 0.32) + (pa_agent_score * 0.30), 1)
+
+    # Agent 5: Counter-Thesis / Trap Researcher (evaluates whipsaw risk penalty 0.0 - 2.5)
+    trap_penalty = 0.0
+    trap_reasons = []
+    if adx_val < 18.0:
+        trap_penalty += 0.6
+        trap_reasons.append(f"Low ADX ({adx_val:.1f})")
+    if not obv_aligned:
+        trap_penalty += 0.5
+        trap_reasons.append("OBV divergence")
+    if not tsi_aligned:
+        trap_penalty += 0.5
+        trap_reasons.append("TSI lag")
+    if vol_surge_ratio < 1.05:
+        trap_penalty += 0.4
+        trap_reasons.append(f"Modest Vol ({vol_surge_ratio:.2f}x)")
+    if breakout_distance_atr > 2.2:
+        trap_penalty += 0.4
+        trap_reasons.append("Extended ATR")
+    trap_penalty = round(min(2.5, trap_penalty), 1)
+
+    # Agent 6: Chief Risk & Portfolio Judge (final synthesis out of 10)
+    adx_bonus = 0.4 if adx_val >= 25.0 else (0.2 if adx_val >= 20.0 else 0.0)
+    final_debate_rating = round(min(10.0, max(1.0, pro_score + adx_bonus - trap_penalty)), 1)
+
+    if final_debate_rating >= 8.5:
+        verdict = "STRONG CONSENSUS 🔥"
+    elif final_debate_rating >= 7.5:
+        verdict = "DEBATE APPROVED ✅"
+    elif final_debate_rating >= 6.5:
+        verdict = "MODERATE CONVICTION ⚡"
+    else:
+        verdict = "CAUTIOUS / SPLIT ⚠️"
+
+    filled = int(round(final_debate_rating))
+    debate_bar = "█" * filled + "░" * (10 - filled)
+
+    risk_note = "Clean Momentum" if not trap_reasons else ", ".join(trap_reasons[:2])
+    summary = (
+        f"OI {oi_agent_score}/10 • Straddle {strad_agent_score}/10 • "
+        f"PA/Mom {pa_agent_score}/10 | Risk: {risk_note}"
+    )
+
+    return {
+        "agents_debate_rating": final_debate_rating,
+        "agents_debate_verdict": verdict,
+        "agents_debate_bar": debate_bar,
+        "agents_debate_summary": summary,
+        "oi_agent_score": oi_agent_score,
+        "straddle_agent_score": strad_agent_score,
+        "momentum_agent_score": pa_agent_score,
+        "pro_researcher_score": pro_score,
+        "trap_penalty": trap_penalty,
+        "trap_reasons": trap_reasons,
+        "direction": direction,
+    }
+
+
 def evaluate_three_confirmations(
     fut_df: pd.DataFrame,
     ce_df: pd.DataFrame,
@@ -835,6 +944,26 @@ def evaluate_three_confirmations(
             tsi_aligned=tsi_aligned
         )
 
+        avg_vol_20 = float(df_ind["Volume"].iloc[-21:-1].mean()) if len(df_ind) >= 21 else float(df_ind["Volume"].mean())
+        curr_vol = float(curr_fut.get("Volume", avg_vol_20))
+        vol_surge_ratio = curr_vol / max(1.0, avg_vol_20)
+
+        debate_info = run_derivatives_agents_debate(
+            direction=direction,
+            oi_change_pct=abs(oi_diff_pct),
+            oi_threshold_pct=oi_thresh_pct,
+            straddle_exp_pct=straddle_exp_pct,
+            straddle_threshold_pct=straddle_thresh_pct,
+            body_ratio=curr_body_ratio,
+            body_threshold_ratio=body_thresh_ratio,
+            breakout_distance_atr=max(0.0, breakout_dist),
+            obv_aligned=obv_aligned,
+            tsi_aligned=tsi_aligned,
+            adx_val=float(auto_params.get("adx_14", 25.0)),
+            vol_surge_ratio=vol_surge_ratio,
+            volatility_regime=str(auto_params.get("volatility_regime", "NORMAL_REGIME")),
+        )
+
         signal_payload = {
             "alert_triggered": True,
             "direction": direction,
@@ -856,6 +985,11 @@ def evaluate_three_confirmations(
             "conviction": rating_info["conviction"],
             "rating_bar": rating_info["bar"],
             "rating_breakdown": rating_info,
+            "agents_debate_rating": debate_info["agents_debate_rating"],
+            "agents_debate_verdict": debate_info["agents_debate_verdict"],
+            "agents_debate_bar": debate_info["agents_debate_bar"],
+            "agents_debate_summary": debate_info["agents_debate_summary"],
+            "agents_debate": debate_info,
             "auto_parameters": auto_params,
             "confirmations": confirmations_detail,
             "bar_time": str(df_ind.index[-1]),
@@ -932,12 +1066,39 @@ def format_three_confirmation_telegram_alert(signal_data: Dict[str, Any]) -> str
     body_thresh = params.get("body_strength_threshold_pct", 65.0)
     regime = params.get("volatility_regime", "NORMAL_REGIME")
 
+    if "agents_debate_rating" not in signal_data:
+        fallback_debate = run_derivatives_agents_debate(
+            direction=direction,
+            oi_change_pct=abs(float(oi_chg_pct)),
+            oi_threshold_pct=float(oi_thresh_pct or 0.15),
+            straddle_exp_pct=float(strad_pct),
+            straddle_threshold_pct=float(strad_thresh or 0.20),
+            body_ratio=float(body_pct) / 100.0,
+            body_threshold_ratio=float(body_thresh or 65.0) / 100.0,
+            breakout_distance_atr=0.8,
+            obv_aligned=True,
+            tsi_aligned=True,
+            adx_val=float(params.get("adx_14", 25.0)),
+            vol_surge_ratio=1.5,
+            volatility_regime=regime,
+        )
+        signal_data["agents_debate_rating"] = fallback_debate["agents_debate_rating"]
+        signal_data["agents_debate_verdict"] = fallback_debate["agents_debate_verdict"]
+        signal_data["agents_debate_summary"] = fallback_debate["agents_debate_summary"]
+        signal_data["agents_debate"] = fallback_debate
+
+    debate_rating = signal_data.get("agents_debate_rating", rating)
+    debate_verdict = signal_data.get("agents_debate_verdict", "STRONG CONSENSUS 🔥")
+    debate_summary = signal_data.get("agents_debate_summary", "")
+
     now_time = datetime.now().strftime("%I:%M %p")
 
     msg = (
         f"{header_emoji} <b>NIFTY DERIVATIVES: {direction} SIGNAL ({rating}/10) {dir_emoji}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Signal Rating:</b> <b>{rating} / 10</b> ({conviction})\n"
+        f"🤖 <b>Agents Debate Rating:</b> <b>{debate_rating} / 10</b> ({debate_verdict})\n"
+        f"🗣️ <i>{debate_summary}</i>\n"
         f"📊 <code>[{r_bar}]</code>\n"
         f"📈 <b>Nifty Futures ({fut_sym})</b>: <b>₹{fut_close:,.2f}</b>\n"
         f"🎯 <b>Auto ATM Strike</b>: <b>{atm_strike}{exp_Part}</b>\n"
@@ -978,6 +1139,7 @@ def dispatch_three_confirmation_telegram_alert(
     df_chart = signal_data.get("df")
     direction = signal_data.get("direction", "BULLISH")
     rating = signal_data.get("rating", 8.5)
+    debate_rating = signal_data.get("agents_debate_rating", rating)
 
     chart_buffer = None
     try:
@@ -987,7 +1149,7 @@ def dispatch_three_confirmation_telegram_alert(
             df=df_chart,
             trigger_price=signal_data.get("swing_trigger_level"),
             kite=kite,
-            title_suffix=f" • {direction} {rating}/10 (3-Conf Confirmed)"
+            title_suffix=f" • {direction} {rating}/10 • Agents Debate {debate_rating}/10"
         )
     except Exception as chart_err:
         logger.warning(f"Could not render 5m chart for {fut_sym}: {chart_err}")

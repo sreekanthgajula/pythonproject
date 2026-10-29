@@ -620,12 +620,20 @@ def detect_options_pressure_buildup(derivatives_data: dict) -> dict:
 def format_telegram_derivatives_alert(derivatives_data: dict) -> str:
     """
     Formats a concise, high-signal Telegram alert delivering strictly the
-    1-10 strength rating (Bull or Bear), explicit Buyer Action, and conviction.
+    1-10 strength rating (Bull or Bear), explicit Buyer Action, Agents Debate Rating, and conviction.
     """
     rating_data = calculate_derivatives_strength_rating(derivatives_data)
     timestamp = derivatives_data.get("last_updated_time") or datetime.datetime.now().strftime("%I:%M %p")
     bias_word = "BULLISH" if rating_data["bias"] == "BULL" else "BEARISH" if rating_data["bias"] == "BEAR" else "NEUTRAL"
     action_text = "🚀 ACTION: BUY WEEKLY CE (CALL)" if rating_data["bias"] == "BULL" else "📉 ACTION: BUY WEEKLY PE (PUT)" if rating_data["bias"] == "BEAR" else "⚖️ RANGEBOUND SETUP"
+
+    pcr = float(derivatives_data.get("pcr", 1.0) or 1.0)
+    vix = float(derivatives_data.get("india_vix", 13.5) or 13.5)
+    sentiment = float(derivatives_data.get("sentiment_score", 0) or 0)
+    risk_penalty = 0.5 if (rating_data["bias"] == "BULL" and vix > 17.5) or (rating_data["bias"] == "BEAR" and vix < 12.0) else 0.0
+    align_bonus = 0.4 if (rating_data["bias"] == "BULL" and pcr >= 1.15 and sentiment >= 25) or (rating_data["bias"] == "BEAR" and pcr <= 0.85 and sentiment <= -25) else 0.0
+    debate_rating = round(min(10.0, max(1.0, float(rating_data["rating"]) + align_bonus - risk_penalty)), 1)
+    debate_verdict = "STRONG CONSENSUS 🔥" if debate_rating >= 8.5 else "DEBATE APPROVED ✅" if debate_rating >= 7.0 else "MODERATE DEBATE ⚡"
 
     msg = (
         f"{rating_data['header_emoji']} <b>NSE DERIVATIVES: {rating_data['rating']}/10 {bias_word} {rating_data['emoji']}</b>\n"
@@ -633,6 +641,7 @@ def format_telegram_derivatives_alert(derivatives_data: dict) -> str:
         f"<b>{action_text}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Strength Rating:</b> <b>{rating_data['rating']} / 10</b> ({rating_data['conviction']})\n"
+        f"🤖 <b>Agents Debate Rating:</b> <b>{debate_rating} / 10</b> ({debate_verdict})\n"
         f"📊 <code>[{rating_data['bar']}]</code>\n"
         f"⏰ {timestamp} | ⚡ <i>Zerodha Live Engine</i>"
     )

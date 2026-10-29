@@ -1766,8 +1766,21 @@ export default function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                   <Sparkles size={18} color="#a78bfa" />
                   <h3 style={{ margin: 0, fontSize: '1.1rem', color: '#f8fafc' }}>
-                    12-Agent LangGraph Debate: <span style={{ color: '#38bdf8' }}>{agentTargetSymbol}</span>
+                    Zerodha Multi-Agent Audit: <span style={{ color: '#38bdf8' }}>{agentTargetSymbol}</span>
                   </h3>
+                  <span
+                    style={{
+                      fontSize: '0.7rem',
+                      padding: '2px 7px',
+                      borderRadius: '999px',
+                      fontWeight: 700,
+                      background: 'rgba(16, 185, 129, 0.2)',
+                      color: '#34d399',
+                      border: '1px solid rgba(16, 185, 129, 0.4)'
+                    }}
+                  >
+                    $0 AI COST
+                  </span>
                   <span
                     style={{
                       fontSize: '0.72rem',
@@ -1792,7 +1805,7 @@ export default function App() {
                   </span>
                 </div>
                 <p style={{ margin: '0.25rem 0 0', fontSize: '0.78rem', color: '#94a3b8' }}>
-                  Analysts (Market, Social, News, Fundamentals) → Bull vs. Bear Debate → Risk Committee → Portfolio Manager
+                  100% Zerodha Data: Trend & 52W High → 4-Pillar Darvas → 5m Buyer Vol & TSI/OBV → BTST/VWAP → Bull/Bear → Risk Plan
                 </p>
               </div>
 

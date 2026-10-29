@@ -344,19 +344,26 @@ def generate_5min_chart_buffer(
         markers[-1] = plot_df["Low"].iloc[-1] * 0.997
         ap.append(mpf.make_addplot(markers, type="scatter", marker="^", markersize=140, color="#00E676", panel=0))
 
-        # Panel 1 (Volume): Volume 20-period Moving Average line (Gold)
+        # Panel 1 (Volume + OBV overlay): Volume 20-period Moving Average line (Gold) + Normalized OBV curve (Magenta)
         has_vol = plot_df["Volume"].sum() > 0
         if has_vol and "Vol_SMA20" in plot_df.columns:
             ap.append(mpf.make_addplot(plot_df["Vol_SMA20"], panel=1, color="#FFD54F", width=1.1))
+        if has_vol and "OBV" in plot_df.columns:
+            obv_min = float(plot_df["OBV"].min())
+            obv_max = float(plot_df["OBV"].max())
+            vol_max = float(plot_df["Volume"].max())
+            if obv_max > obv_min and vol_max > 0:
+                obv_scaled_on_vol = ((plot_df["OBV"] - obv_min) / (obv_max - obv_min)) * (vol_max * 0.85) + (vol_max * 0.10)
+                ap.append(mpf.make_addplot(obv_scaled_on_vol, panel=1, color="#E040FB", width=1.3, secondary_y=False))
 
-        # Panel 2: True Strength Index (TSI: Blue, Signal: Orange, Zero: Gray dashed)
-        ap.append(mpf.make_addplot(plot_df["TSI"], panel=2, color="#2979FF", width=1.6, ylabel="TSI (13,25,13)"))
-        ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=2, color="#FF6D00", width=1.2))
-        ap.append(mpf.make_addplot(plot_df["Zero"], panel=2, color="#90A4AE", width=0.8, linestyle="--"))
+        # Panel 2: On-Balance Volume (OBV: Purple, OBV EMA20: Gold dashed)
+        ap.append(mpf.make_addplot(plot_df["OBV"], panel=2, color="#AB47BC", width=1.6, ylabel="OBV"))
+        ap.append(mpf.make_addplot(plot_df["OBV_EMA20"], panel=2, color="#FDD835", width=1.0, linestyle="--"))
 
-        # Panel 3: On-Balance Volume (OBV: Purple, OBV EMA20: Gold dashed)
-        ap.append(mpf.make_addplot(plot_df["OBV"], panel=3, color="#AB47BC", width=1.6, ylabel="OBV"))
-        ap.append(mpf.make_addplot(plot_df["OBV_EMA20"], panel=3, color="#FDD835", width=1.0, linestyle="--"))
+        # Panel 3: True Strength Index (TSI: Blue, Signal: Orange, Zero: Gray dashed)
+        ap.append(mpf.make_addplot(plot_df["TSI"], panel=3, color="#2979FF", width=1.6, ylabel="TSI (13,25,13)"))
+        ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=3, color="#FF6D00", width=1.2))
+        ap.append(mpf.make_addplot(plot_df["Zero"], panel=3, color="#90A4AE", width=0.8, linestyle="--"))
 
         # Visual Styling (High-contrast dark trading terminal)
         mc = mpf.make_marketcolors(
@@ -444,11 +451,12 @@ def calculate_short_chart_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # 2. Volume SMA 20
     out_df["Vol_SMA20"] = out_df["Volume"].rolling(window=20, min_periods=1).mean()
 
-    # 3. On-Balance Volume (OBV)
+    # 3. Intraday On-Balance Volume (OBV resets daily at 09:15 AM)
     close_diff = out_df["Close"].diff()
     direction = np.where(close_diff > 0, 1, np.where(close_diff < 0, -1, 0))
     direction[0] = 0
-    out_df["OBV"] = (direction * out_df["Volume"]).cumsum()
+    out_df["Signed_Vol"] = direction * out_df["Volume"]
+    out_df["OBV"] = out_df.groupby(dates)["Signed_Vol"].cumsum()
     out_df["OBV_SMA9"] = out_df["OBV"].rolling(window=9, min_periods=1).mean()
 
     # 4. True Strength Index (TSI 25, 13, 13)
@@ -533,19 +541,26 @@ def generate_5min_short_chart_buffer(
         markers[-1] = plot_df["High"].iloc[-1] * 1.003
         ap.append(mpf.make_addplot(markers, type="scatter", marker="v", markersize=140, color="#FF1744", panel=0))
 
-        # Panel 1 (Volume): Volume 20-period Moving Average line (Gold)
+        # Panel 1 (Volume + OBV overlay): Volume 20-period Moving Average line (Gold) + Normalized OBV curve (Magenta)
         has_vol = plot_df["Volume"].sum() > 0
         if has_vol and "Vol_SMA20" in plot_df.columns:
             ap.append(mpf.make_addplot(plot_df["Vol_SMA20"], panel=1, color="#FFD54F", width=1.1))
+        if has_vol and "OBV" in plot_df.columns:
+            obv_min = float(plot_df["OBV"].min())
+            obv_max = float(plot_df["OBV"].max())
+            vol_max = float(plot_df["Volume"].max())
+            if obv_max > obv_min and vol_max > 0:
+                obv_scaled_on_vol = ((plot_df["OBV"] - obv_min) / (obv_max - obv_min)) * (vol_max * 0.85) + (vol_max * 0.10)
+                ap.append(mpf.make_addplot(obv_scaled_on_vol, panel=1, color="#E040FB", width=1.3, secondary_y=False))
 
-        # Panel 2: True Strength Index (TSI: Blue, Signal: Orange, Zero: Gray dashed)
-        ap.append(mpf.make_addplot(plot_df["TSI"], panel=2, color="#2979FF", width=1.6, ylabel="TSI (25,13,13)"))
-        ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=2, color="#FF6D00", width=1.2))
-        ap.append(mpf.make_addplot(plot_df["Zero"], panel=2, color="#90A4AE", width=0.8, linestyle="--"))
+        # Panel 2: On-Balance Volume (OBV: Purple, OBV SMA9: Gold dashed)
+        ap.append(mpf.make_addplot(plot_df["OBV"], panel=2, color="#AB47BC", width=1.6, ylabel="OBV"))
+        ap.append(mpf.make_addplot(plot_df["OBV_SMA9"], panel=2, color="#FDD835", width=1.0, linestyle="--"))
 
-        # Panel 3: On-Balance Volume (OBV: Purple, OBV SMA9: Gold dashed)
-        ap.append(mpf.make_addplot(plot_df["OBV"], panel=3, color="#AB47BC", width=1.6, ylabel="OBV"))
-        ap.append(mpf.make_addplot(plot_df["OBV_SMA9"], panel=3, color="#FDD835", width=1.0, linestyle="--"))
+        # Panel 3: True Strength Index (TSI: Blue, Signal: Orange, Zero: Gray dashed)
+        ap.append(mpf.make_addplot(plot_df["TSI"], panel=3, color="#2979FF", width=1.6, ylabel="TSI (25,13,13)"))
+        ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=3, color="#FF6D00", width=1.2))
+        ap.append(mpf.make_addplot(plot_df["Zero"], panel=3, color="#90A4AE", width=0.8, linestyle="--"))
 
         # Visual Styling (High-contrast dark trading terminal)
         mc = mpf.make_marketcolors(
@@ -648,7 +663,7 @@ def generate_evening_pro_chart_buffer(
 
         # Supertrend (10, 3)
         try:
-            from tradingagents.strategies.supertrend_strategy import supertrend as calc_st
+            from scripts.evening_pro_scanner import supertrend as calc_st
             norm_df = full_df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
             st_line, st_dir = calc_st(norm_df, period=10, multiplier=3.0)
             full_df["Supertrend"] = st_line.values
@@ -692,22 +707,29 @@ def generate_evening_pro_chart_buffer(
         markers[-1] = plot_df["Low"].iloc[-1] * 0.997
         ap.append(mpf.make_addplot(markers, type="scatter", marker="^", markersize=140, color="#00E676", panel=0))
 
-        # Panel 1: Volume with SMA20
+        # Panel 1: Volume with SMA20 + Normalized OBV curve (Magenta)
         has_vol = plot_df["Volume"].sum() > 0
         if has_vol and "Vol_SMA20" in plot_df.columns:
             ap.append(mpf.make_addplot(plot_df["Vol_SMA20"], panel=1, color="#FFD54F", width=1.1))
+        if has_vol and "OBV" in plot_df.columns:
+            obv_min = float(plot_df["OBV"].min())
+            obv_max = float(plot_df["OBV"].max())
+            vol_max = float(plot_df["Volume"].max())
+            if obv_max > obv_min and vol_max > 0:
+                obv_scaled_on_vol = ((plot_df["OBV"] - obv_min) / (obv_max - obv_min)) * (vol_max * 0.85) + (vol_max * 0.10)
+                ap.append(mpf.make_addplot(obv_scaled_on_vol, panel=1, color="#E040FB", width=1.3, secondary_y=False))
 
-        # Panel 2: TSI
-        if "TSI" in plot_df.columns and "TSI_Signal" in plot_df.columns:
-            ap.append(mpf.make_addplot(plot_df["TSI"], panel=2, color="#2979FF", width=1.6, ylabel="TSI (13,25,13)"))
-            ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=2, color="#FF6D00", width=1.2))
-            ap.append(mpf.make_addplot(plot_df["Zero"], panel=2, color="#90A4AE", width=0.8, linestyle="--"))
-
-        # Panel 3: OBV
+        # Panel 2: OBV
         if "OBV" in plot_df.columns:
-            ap.append(mpf.make_addplot(plot_df["OBV"], panel=3, color="#AB47BC", width=1.6, ylabel="OBV"))
+            ap.append(mpf.make_addplot(plot_df["OBV"], panel=2, color="#AB47BC", width=1.6, ylabel="OBV"))
             if "OBV_EMA20" in plot_df.columns:
-                ap.append(mpf.make_addplot(plot_df["OBV_EMA20"], panel=3, color="#FDD835", width=1.0, linestyle="--"))
+                ap.append(mpf.make_addplot(plot_df["OBV_EMA20"], panel=2, color="#FDD835", width=1.0, linestyle="--"))
+
+        # Panel 3: TSI
+        if "TSI" in plot_df.columns and "TSI_Signal" in plot_df.columns:
+            ap.append(mpf.make_addplot(plot_df["TSI"], panel=3, color="#2979FF", width=1.6, ylabel="TSI (13,25,13)"))
+            ap.append(mpf.make_addplot(plot_df["TSI_Signal"], panel=3, color="#FF6D00", width=1.2))
+            ap.append(mpf.make_addplot(plot_df["Zero"], panel=3, color="#90A4AE", width=0.8, linestyle="--"))
 
         # High-contrast styling
         mc = mpf.make_marketcolors(

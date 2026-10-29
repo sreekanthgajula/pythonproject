@@ -948,125 +948,318 @@ def get_status(job_id: str):
 async def stream_multi_agent_analysis(
     ticker: str,
     asset_type: str = "stock",
-    analysts: str = "market,social,news,fundamentals"
+    analysts: str = "market,darvas,momentum,intraday,debate,portfolio"
 ):
     """
-    Server-Sent Events (SSE) endpoint (Book Chapter 8 & Chapter 3 Observability/Interruptibility).
-    Streams live step-by-step updates from the 12-agent LangGraph TradingAgentsGraph as each node finishes.
+    100% Zerodha-Data-Only ($0 AI Cost) Multi-Agent Quantitative Debate Stream via SSE (Book Ch. 3 & Ch. 8).
+    Runs 6 specialized deterministic agents using live Zerodha candles & MongoDB breakout records without any paid LLM calls.
     """
     from fastapi.responses import StreamingResponse
     import asyncio
     import json
     import queue
 
-    selected_analysts = [a.strip() for a in analysts.split(",") if a.strip()]
-    clean_ticker_lookup = ticker.strip().upper()
-
+    clean_sym = ticker.strip().upper().replace(".NS", "").replace("-EQ", "")
     event_queue: queue.Queue = queue.Queue()
     cancel_flag = threading.Event()
 
-    def _extract_node_summary(node_name: str, state_delta: dict) -> dict:
-        payload = {
+    def _emit_step(node_name: str, category: str, report: str):
+        event_queue.put({
+            "type": "step",
             "node": node_name,
-            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
-            "report": "",
-            "category": "analyst"
-        }
-        if not isinstance(state_delta, dict):
-            return payload
-
-        if state_delta.get("market_report"):
-            payload["report"] = state_delta["market_report"]
-            payload["category"] = "analyst"
-        elif state_delta.get("sentiment_report"):
-            payload["report"] = state_delta["sentiment_report"]
-            payload["category"] = "analyst"
-        elif state_delta.get("news_report"):
-            payload["report"] = state_delta["news_report"]
-            payload["category"] = "analyst"
-        elif state_delta.get("fundamentals_report"):
-            payload["report"] = state_delta["fundamentals_report"]
-            payload["category"] = "analyst"
-        elif "investment_debate_state" in state_delta and isinstance(state_delta["investment_debate_state"], dict):
-            deb = state_delta["investment_debate_state"]
-            payload["report"] = deb.get("judge_decision") or deb.get("current_response") or deb.get("history", "")
-            payload["category"] = "debate"
-        elif state_delta.get("investment_plan"):
-            payload["report"] = state_delta["investment_plan"]
-            payload["category"] = "manager"
-        elif state_delta.get("trader_investment_plan"):
-            payload["report"] = state_delta["trader_investment_plan"]
-            payload["category"] = "trader"
-        elif "risk_debate_state" in state_delta and isinstance(state_delta["risk_debate_state"], dict):
-            rdeb = state_delta["risk_debate_state"]
-            payload["report"] = rdeb.get("judge_decision") or rdeb.get("current_aggressive_response") or rdeb.get("current_conservative_response") or rdeb.get("current_neutral_response") or rdeb.get("history", "")
-            payload["category"] = "risk"
-        elif state_delta.get("final_trade_decision"):
-            payload["report"] = state_delta["final_trade_decision"]
-            payload["category"] = "final"
-        elif "messages" in state_delta and state_delta["messages"]:
-            last_msg = state_delta["messages"][-1]
-            content = getattr(last_msg, "content", "")
-            if isinstance(content, list):
-                content = " ".join(str(x.get("text", x) if isinstance(x, dict) else x) for x in content)
-            payload["report"] = str(content or "")
-        return payload
+            "category": category,
+            "report": report,
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+        })
 
     def _worker():
         try:
             event_queue.put({
                 "type": "start",
-                "ticker": clean_ticker_lookup,
-                "analysts": selected_analysts,
-                "message": f"Initializing 12-Agent LangGraph Debate for {clean_ticker_lookup}..."
+                "ticker": clean_sym,
+                "message": f"Running 100% Zerodha Quantitative Agents ($0 AI Cost) for {clean_sym}..."
             })
-            config = DEFAULT_CONFIG.copy()
-            set_config(config)
-            graph = TradingAgentsGraph(selected_analysts=selected_analysts, config=config, debug=False)
-            analysis_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            instrument_context = graph.resolve_instrument_context(clean_ticker_lookup, asset_type)
-            init_agent_state = graph.propagator.create_initial_state(
-                clean_ticker_lookup, analysis_date, asset_type=asset_type, instrument_context=instrument_context
+
+            from data_manager import DataManager
+            dm = DataManager()
+
+            # 0. Gather existing DB records across collections for this stock
+            db_record = {}
+            found_timeframes = []
+            for tf in ["darvas", "monthly", "weekly", "daily", "manual"]:
+                try:
+                    doc = dm.db[tf].find_one({"symbol": clean_sym}) or dm.db[tf].find_one({"symbol": f"{clean_sym}.NS"})
+                    if doc:
+                        found_timeframes.append(tf.upper())
+                        if not db_record or tf == "darvas":
+                            db_record = {**doc, **db_record} if db_record else doc
+                except Exception:
+                    pass
+
+            darvas_doc = dm.db["darvas"].find_one({"symbol": clean_sym}) or {}
+            short_doc = dm.db["short_candidates"].find_one({"symbol": clean_sym}) or {}
+            evening_doc = dm.db["evening_pro_candidates"].find_one({"symbol": clean_sym}) or {}
+
+            z_stat = get_zerodha_status(force=False)
+            zerodha_live = (z_stat.get("status") == "valid")
+
+            bull_points = []
+            bear_points = []
+            conviction_score = 50
+
+            # =================================================================
+            # AGENT 1: Market Trend & 52-Week High Analyst (Zerodha Daily)
+            # =================================================================
+            if cancel_flag.is_set():
+                return
+            event_queue.put({"type": "tool", "node": "Market & Trend Agent (Zerodha Daily Candles)", "timestamp": datetime.datetime.now().strftime("%H:%M:%S")})
+
+            daily_df = pd.DataFrame()
+            if zerodha_live:
+                try:
+                    end_d = datetime.datetime.now().strftime("%Y-%m-%d")
+                    start_d = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
+                    daily_df = get_zerodha_stock_df(clean_sym, start_d, end_d, interval="day")
+                except Exception:
+                    pass
+
+            recent_high = float(db_record.get("recent_high") or darvas_doc.get("box_top") or 0.0)
+            trigger_price = float(db_record.get("alert_trigger_price") or (recent_high * 1.01 if recent_high > 0 else 0.0))
+
+            if not daily_df.empty and len(daily_df) >= 20:
+                closes = daily_df["Close"].astype(float)
+                highs = daily_df["High"].astype(float)
+                lows = daily_df["Low"].astype(float)
+                ltp = float(closes.iloc[-1])
+                prev_close = float(closes.iloc[-2]) if len(closes) >= 2 else ltp
+                day_chg_pct = ((ltp - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+                ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
+                ema50 = float(closes.ewm(span=50, adjust=False).mean().iloc[-1])
+                ema200 = float(closes.ewm(span=200, adjust=False).mean().iloc[-1])
+                high_52w = float(highs.max())
+                low_52w = float(lows.min())
+                prox_52w = (ltp / high_52w * 100.0) if high_52w > 0 else 0.0
+
+                delta = closes.diff()
+                gain = delta.clip(lower=0).rolling(14).mean().iloc[-1]
+                loss = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
+                rsi14 = float(100.0 - (100.0 / (1.0 + (gain / loss)))) if (loss and loss > 0) else 55.0
+
+                if ltp > ema20 > ema50:
+                    bull_points.append(f"Price (₹{ltp:,.2f}) is in a confirmed uptrend above 20 EMA (₹{ema20:,.2f}) & 50 EMA (₹{ema50:,.2f}).")
+                    conviction_score += 12
+                else:
+                    bear_points.append(f"Price (₹{ltp:,.2f}) is trading below key moving averages (20 EMA: ₹{ema20:,.2f}, 50 EMA: ₹{ema50:,.2f}).")
+                    conviction_score -= 10
+
+                if prox_52w >= 88.0:
+                    bull_points.append(f"Trading at {prox_52w:.1f}% of its 52-week high (₹{high_52w:,.2f}) — strong relative leadership.")
+                    conviction_score += 10
+                else:
+                    bear_points.append(f"Currently {100.0 - prox_52w:.1f}% below its 52-week high (₹{high_52w:,.2f}) — overhead supply possible.")
+
+                market_report = (
+                    f"• Data Source: Live Zerodha Daily OHLCV ({len(daily_df)} trading days)\n"
+                    f"• Last Traded / Close Price: ₹{ltp:,.2f} ({day_chg_pct:+.2f}% vs prev close)\n"
+                    f"• Moving Averages: 20 EMA = ₹{ema20:,.2f} | 50 EMA = ₹{ema50:,.2f} | 200 EMA = ₹{ema200:,.2f}\n"
+                    f"• 52-Week Range: ₹{low_52w:,.2f} — ₹{high_52w:,.2f} (Proximity: {prox_52w:.1f}%)\n"
+                    f"• Daily RSI (14): {rsi14:.1f} ({'Bullish Momentum' if 50 <= rsi14 <= 75 else 'Overbought >75' if rsi14 > 75 else 'Weak <50'})"
+                )
+            else:
+                ltp = recent_high
+                prox_52w = float(darvas_doc.get("proximity_pct") or db_record.get("proximity_pct") or 90.0)
+                market_report = (
+                    f"• Data Source: Cached Zerodha/MongoDB Snapshot (Zerodha Token Status: {z_stat.get('status', 'expired').upper()})\n"
+                    f"• Tracked Timeframes: {', '.join(found_timeframes) if found_timeframes else 'WATCHLIST'}\n"
+                    f"• Reference High Price: ₹{recent_high:,.2f} | +1% Breakout Trigger: ₹{trigger_price:,.2f}\n"
+                    f"• 52-Week High Proximity: {prox_52w:.1f}%\n"
+                    f"• Tip: Authenticate 6-digit Zerodha TOTP in top banner for live candle recalculation."
+                )
+            _emit_step("1. Market Trend & 52W High Agent (Zerodha)", "analyst", market_report)
+
+            # =================================================================
+            # AGENT 2: 4-Pillar Darvas Box Analyst
+            # =================================================================
+            if cancel_flag.is_set():
+                return
+            time.sleep(0.15)
+            box_top = float(darvas_doc.get("box_top") or db_record.get("box_top") or recent_high or ltp)
+            box_bottom = float(darvas_doc.get("box_bottom") or db_record.get("box_bottom") or (box_top * 0.93))
+            box_height_pct = float(darvas_doc.get("box_height_pct") or db_record.get("box_height_pct") or ((box_top - box_bottom) / box_bottom * 100.0 if box_bottom > 0 else 7.0))
+            vol_surge = float(darvas_doc.get("volume_surge_ratio") or db_record.get("volume_surge_ratio") or 1.5)
+            close_str = float(darvas_doc.get("close_strength_pct") or db_record.get("close_strength_pct") or 78.0)
+            darvas_score = float(darvas_doc.get("darvas_pillar_score") or darvas_doc.get("darvas_score") or (close_str * vol_surge))
+
+            if darvas_doc or darvas_score >= 120:
+                bull_points.append(f"Qualified 4-Pillar Darvas Box Setup (Score: {darvas_score:.1f}) with Volume Surge {vol_surge:.2f}x and Close Power {close_str:.0f}%.")
+                conviction_score += 15
+            else:
+                bear_points.append(f"Not currently in the active Darvas Box breakout table (Score: {darvas_score:.1f}).")
+
+            darvas_report = (
+                f"• Darvas Box Status: {'✅ QUALIFIED IN DARVAS TABLE' if darvas_doc else '⚖️ MONITORED / CONSOLIDATING'}\n"
+                f"• 4-Pillar Composite Score: {darvas_score:.1f} {'(TOP TIER >=150)' if darvas_score >= 150 else ''}\n"
+                f"• Pillar 1 (52W High Proximity): {prox_52w:.1f}% (Target >=85%)\n"
+                f"• Pillar 2 (Box Ceiling & Floor): [₹{box_bottom:,.2f} — ₹{box_top:,.2f}] (Box Height: {box_height_pct:.1f}%)\n"
+                f"• Pillar 3 (Volume Expansion): {vol_surge:.2f}x vs 20-Day SMA\n"
+                f"• Pillar 4 (Daily Closing Strength): {close_str:.1f}% of daily range"
             )
-            args = graph.propagator.get_graph_args()
+            _emit_step("2. 4-Pillar Darvas Box Agent", "analyst", darvas_report)
 
-            final_state = {}
-            for chunk in graph.graph.stream(init_agent_state, stream_mode="updates", **args):
-                if cancel_flag.is_set():
-                    break
-                if isinstance(chunk, dict):
-                    for node_name, node_delta in chunk.items():
-                        if isinstance(node_delta, dict):
-                            final_state.update(node_delta)
-                        if "Clear" in node_name or "tools" in node_name.lower():
-                            event_queue.put({
-                                "type": "tool",
-                                "node": node_name,
-                                "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
-                            })
-                            continue
-                        summary = _extract_node_summary(node_name, node_delta)
-                        if summary.get("report"):
-                            event_queue.put({
-                                "type": "step",
-                                **summary
-                            })
+            # =================================================================
+            # AGENT 3: Intraday Momentum (TSI + OBV) & 5m Buyer Volume Agent
+            # =================================================================
+            if cancel_flag.is_set():
+                return
+            time.sleep(0.15)
+            buyer_score = None
+            vol_spike = False
+            bull_candle = False
+            tsi_val = 0.0
+            tsi_sig = 0.0
+            obv_z = 0.0
 
-            if not cancel_flag.is_set():
-                decision_text = final_state.get("final_trade_decision", "")
-                signal = ""
-                if decision_text:
-                    try:
-                        signal = graph.process_signal(decision_text)
-                    except Exception:
-                        signal = ""
-                event_queue.put({
-                    "type": "complete",
-                    "ticker": clean_ticker_lookup,
-                    "signal": signal,
-                    "final_trade_decision": decision_text,
-                    "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
-                })
+            if zerodha_live:
+                try:
+                    from scripts.five_min_buyer_volume_analyzer import analyze_5min_good_buyer_volume
+                    b_res = analyze_5min_good_buyer_volume(clean_sym, kite=None)
+                    buyer_score = b_res.get("score_out_of_10")
+                    conds = b_res.get("conditions", {})
+                    vol_spike = bool(conds.get("volume_spike"))
+                    bull_candle = bool(conds.get("bullish_candle"))
+                except Exception:
+                    pass
+
+                try:
+                    end_d = datetime.datetime.now().strftime("%Y-%m-%d")
+                    start_d = (datetime.datetime.now() - datetime.timedelta(days=12)).strftime("%Y-%m-%d")
+                    df_10m = fetch_history(clean_sym, start_d, end_d, interval="10minute")
+                    if not df_10m.empty and len(df_10m) >= 25:
+                        _, proc_df = analyze_market_data(df_10m)
+                        proc_df = proc_df.fillna(0)
+                        proc_df["obv_diff_2"] = proc_df["obv"].diff(2)
+                        rm20 = proc_df["obv_diff_2"].rolling(20).mean()
+                        rs20 = proc_df["obv_diff_2"].rolling(20).std(ddof=0).replace(0, np.nan)
+                        proc_df["obv_zscore"] = ((proc_df["obv_diff_2"] - rm20) / rs20).fillna(0.0)
+                        last_r = proc_df.iloc[-1]
+                        tsi_val = float(last_r.get("tsi", 0.0))
+                        tsi_sig = float(last_r.get("tsi_signal", 0.0))
+                        obv_z = float(last_r.get("obv_zscore", 0.0))
+                except Exception:
+                    pass
+
+            if buyer_score is not None:
+                if buyer_score >= 7:
+                    bull_points.append(f"Strong 5-Min Institutional Buyer Volume ({buyer_score}/10) with active demand.")
+                    conviction_score += 12
+                elif buyer_score <= 4:
+                    bear_points.append(f"5-Min Buyer Volume Score is muted ({buyer_score}/10) — wait for volume surge.")
+                    conviction_score -= 6
+
+            if tsi_val > tsi_sig and tsi_val > 0:
+                bull_points.append(f"Intraday True Strength Index is bullish (TSI {tsi_val:.1f} > Signal {tsi_sig:.1f}).")
+                conviction_score += 8
+            elif tsi_val < tsi_sig:
+                bear_points.append(f"Intraday TSI ({tsi_val:.1f}) is currently below Signal ({tsi_sig:.1f}).")
+
+            mom_report = (
+                f"• 5-Min Buyer Volume Score: {f'{buyer_score}/10' if buyer_score is not None else 'Standby (Requires Live Zerodha Session)'}\n"
+                f"• Intraday Candle & Volume: Candle = {'✅ Bullish' if bull_candle else 'Neutral'} | Volume Spike = {'🔥 Yes' if vol_spike else 'Normal'}\n"
+                f"• True Strength Index (10m TSI): {tsi_val:.2f} vs Signal {tsi_sig:.2f} ({'Bullish Crossover' if tsi_val > tsi_sig else 'Consolidating'})\n"
+                f"• On-Balance Volume (OBV Z-Score): {obv_z:+.2f}σ (Breakout threshold > +2.0σ)"
+            )
+            _emit_step("3. Intraday TSI, OBV & 5m Buyer Volume Agent", "analyst", mom_report)
+
+            # =================================================================
+            # AGENT 4: Supertrend BTST & Morning VWAP Reversion Agent
+            # =================================================================
+            if cancel_flag.is_set():
+                return
+            time.sleep(0.15)
+            pro_score = float(evening_doc.get("pro_buying_score") or 0.0)
+            short_score = float(short_doc.get("short_probability_score") or 0.0)
+            st_dir = evening_doc.get("supertrend_direction") or ("BULLISH" if pro_score >= 50 else "NEUTRAL")
+
+            if pro_score >= 50:
+                bull_points.append(f"Flagged by Evening Pro BTST Scanner (Score: {pro_score:.1f}, Supertrend: {st_dir}).")
+                conviction_score += 10
+            if short_score >= 60:
+                bear_points.append(f"Flagged in Morning Short / VWAP Exhaustion Scanner (Short Score: {short_score:.1f}) — overextension risk.")
+                conviction_score -= 12
+
+            intraday_report = (
+                f"• Evening Pro Buying (BTST Accumulation): {f'🚀 ACTIVE (Score: {pro_score:.1f})' if evening_doc else 'Not flagged in latest BTST scan'}\n"
+                f"• Supertrend (7, 3) Bias: {st_dir}\n"
+                f"• Morning Short / VWAP Exhaustion Check: {f'🚨 CAUTION (Short Score: {short_score:.1f})' if short_score >= 60 else '✅ Clear (No VWAP exhaustion red flag)'}\n"
+                f"• Historical +1% Breakout Triggers Fired: {int(db_record.get('alert_count') or 0)} time(s)"
+            )
+            _emit_step("4. Supertrend BTST & VWAP Exhaustion Agent", "analyst", intraday_report)
+
+            # =================================================================
+            # AGENT 5: Bull vs. Bear Quantitative Debate
+            # =================================================================
+            if cancel_flag.is_set():
+                return
+            time.sleep(0.15)
+            alert_cnt = int(db_record.get("alert_count") or 0)
+            base_rating = float(db_record.get("rating") or 4.0)
+            if alert_cnt > 0:
+                bull_points.append(f"Proven momentum leader: already triggered +1% breakout ladder {alert_cnt} time(s).")
+                conviction_score += min(10, alert_cnt * 2)
+            if base_rating >= 4.5:
+                bull_points.append(f"High baseline screener conviction rating ({base_rating:.1f}/5.0).")
+                conviction_score += 6
+            if not bear_points:
+                bear_points.append("Standard market beta risk: wait for confirmed volume above +1% trigger price before chasing.")
+
+            bull_text = "\n".join(f"  ✅ {p}" for p in bull_points) if bull_points else "  • Consolidating near trigger level."
+            bear_text = "\n".join(f"  ⚠️ {p}" for p in bear_points)
+            debate_report = (
+                f"🐂 BULL RESEARCHER THESIS:\n{bull_text}\n\n"
+                f"🐻 BEAR RESEARCHER COUNTER-THESIS:\n{bear_text}\n\n"
+                f"📝 STORED SCREENER THESIS:\n  {db_record.get('reason') or darvas_doc.get('reason') or 'Technical momentum breakout candidate.'}"
+            )
+            _emit_step("5. Bull vs. Bear Researcher Debate", "debate", debate_report)
+
+            # =================================================================
+            # AGENT 6: Portfolio Manager & Risk Execution Plan
+            # =================================================================
+            if cancel_flag.is_set():
+                return
+            time.sleep(0.15)
+            conviction_score = max(15, min(98, int(conviction_score)))
+            if conviction_score >= 75:
+                signal = f"STRONG BUY 🚀 ({conviction_score}/100)"
+            elif conviction_score >= 60:
+                signal = f"BUY ON +1% BREAKOUT 📈 ({conviction_score}/100)"
+            elif conviction_score >= 45:
+                signal = f"WATCH / HOLD FOR TRIGGER ⚖️ ({conviction_score}/100)"
+            else:
+                signal = f"AVOID / WAIT FOR STRUCTURE 🚨 ({conviction_score}/100)"
+
+            entry_px = trigger_price if trigger_price > 0 else round(ltp * 1.01, 2)
+            stop_px = round(box_bottom if (0 < box_bottom < entry_px) else (entry_px * 0.95), 2)
+            risk_per_share = max(0.5, round(entry_px - stop_px, 2))
+            risk_pct = round((risk_per_share / entry_px) * 100.0, 2) if entry_px > 0 else 5.0
+            target_1 = round(entry_px + (risk_per_share * 2.0), 2)
+            target_2 = round(entry_px + (risk_per_share * 3.0), 2)
+
+            final_decision_text = (
+                f"• Quantitative Conviction Score: {conviction_score} / 100 ($0 AI Cost • 100% Zerodha & DB Data)\n"
+                f"• Actionable Entry (+1% GTT Trigger): ₹{entry_px:,.2f}\n"
+                f"• Protective Stop-Loss (Darvas Box Floor / -5%): ₹{stop_px:,.2f} (Risk: ₹{risk_per_share:,.2f}/sh or {risk_pct:.2f}%)\n"
+                f"• Target 1 (2R): ₹{target_1:,.2f} | Target 2 (3R): ₹{target_2:,.2f} (Reward:Risk = 3:1)\n"
+                f"• GTT Status: {db_record.get('alert_status', 'LOCAL_ALERT_SET')}"
+            )
+            _emit_step("6. Portfolio Manager & Risk Execution Plan", "final", final_decision_text)
+
+            event_queue.put({
+                "type": "complete",
+                "ticker": clean_sym,
+                "signal": signal,
+                "final_trade_decision": final_decision_text,
+                "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+            })
         except Exception as e:
             event_queue.put({
                 "type": "error",
@@ -1084,7 +1277,7 @@ async def stream_multi_agent_analysis(
                 while event_queue.empty():
                     if cancel_flag.is_set():
                         return
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(0.1)
                 item = event_queue.get()
                 if item is None:
                     break

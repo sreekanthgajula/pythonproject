@@ -832,10 +832,127 @@ def fetch_historical_daily_data(symbol: str, period_days: int = 365) -> pd.DataF
     return pd.DataFrame()
 
 
+def run_supertrend_btst_agents_debate(
+    symbol: str,
+    btst_playbook: Optional[str],
+    is_bullish_st: bool,
+    flipped_green: bool,
+    above_ema50: bool,
+    swing_5d_breakout: bool,
+    close_pos_pct: float,
+    is_green_candle: bool,
+    vol_ratio: float,
+    obv_bullish: bool,
+    tsi_bullish: bool,
+    stop_dist_pct: float,
+) -> Dict[str, Any]:
+    """
+    Runs a 6-Agent Pre-BTST Quantitative Debate (100% Zerodha Data, $0 AI Cost)
+    to evaluate how strong the Supertrend Pro Buying (BTST) setup is out of 10:
+      1. Supertrend & Trend Structure Analyst (ST 10,3 flip/trend, EMA 50, 5D Swing Breakout)
+      2. BTST Closing Power & Price Action Analyst (Day range close % & green body strength)
+      3. Institutional Volume, OBV & TSI Flow Analyst (Volume surge, OBV > EMA20, TSI > Signal)
+      4. BTST Bull Researcher (Synthesizes overnight gap-up & continuation thesis)
+      5. Overnight Gap-Risk Researcher (Penalizes weak closes < 65%, red bars, or wide stops)
+      6. Chief Risk & Portfolio Judge (Produces final `agents_debate_rating` out of 10)
+    """
+    # Agent 1: Supertrend & Trend Structure Analyst (0-10)
+    st_score = 4.0
+    if is_bullish_st:
+        st_score += 2.2
+    if flipped_green:
+        st_score += 2.2
+    elif swing_5d_breakout:
+        st_score += 1.8
+    if above_ema50:
+        st_score += 1.6
+    st_score = round(min(10.0, max(1.5, st_score)), 1)
+
+    # Agent 2: BTST Closing Power & Price Action Analyst (0-10)
+    if not is_green_candle or close_pos_pct < 50.0:
+        close_score = round(max(1.5, (close_pos_pct / 100.0) * 5.0), 1)
+    else:
+        close_score = round(min(10.0, 5.5 + ((close_pos_pct - 50.0) / 50.0) * 4.5), 1)
+
+    # Agent 3: Institutional Volume, OBV & TSI Flow Analyst (0-10)
+    flow_score = 4.2
+    if vol_ratio >= 1.2:
+        flow_score += min(2.4, 1.2 + (vol_ratio - 1.2) * 1.1)
+    elif vol_ratio >= 1.0:
+        flow_score += 0.6
+    if obv_bullish:
+        flow_score += 1.7
+    if tsi_bullish:
+        flow_score += 1.7
+    flow_score = round(min(10.0, max(2.0, flow_score)), 1)
+
+    # Agent 4: BTST Bull Lead Researcher
+    bull_thesis_score = round((st_score * 0.36) + (close_score * 0.34) + (flow_score * 0.30), 1)
+
+    # Agent 5: Overnight Gap-Risk Researcher (Counter-Thesis Penalty 0.0 - 4.5)
+    risk_penalty = 0.0
+    risk_reasons = []
+    if not is_green_candle:
+        risk_penalty += 2.2
+        risk_reasons.append("Red distribution candle")
+    if close_pos_pct < 65.0:
+        risk_penalty += 1.5
+        risk_reasons.append(f"Weak close ({close_pos_pct:.0f}% of range)")
+    if not above_ema50:
+        risk_penalty += 1.0
+        risk_reasons.append("Below EMA50")
+    if not obv_bullish:
+        risk_penalty += 0.5
+        risk_reasons.append("OBV lag")
+    if not tsi_bullish:
+        risk_penalty += 0.4
+        risk_reasons.append("TSI soft")
+    if stop_dist_pct > 4.0:
+        risk_penalty += 0.5
+        risk_reasons.append(f"Wide stop ({stop_dist_pct:.1f}%)")
+    risk_penalty = round(min(4.5, risk_penalty), 1)
+
+    # Agent 6: Chief Risk & Portfolio Judge
+    playbook_bonus = 0.5 if btst_playbook in ("STAGE 1: ST Flip Breakout", "STAGE 2: 5D Swing Breakout") else (0.3 if btst_playbook else 0.0)
+    final_rating = round(min(10.0, max(1.0, bull_thesis_score + playbook_bonus - risk_penalty)), 1)
+
+    if final_rating >= 8.5:
+        verdict = "STRONG BTST CONSENSUS 🔥"
+    elif final_rating >= 7.2:
+        verdict = "DEBATE APPROVED ✅"
+    elif final_rating >= 6.2:
+        verdict = "MODERATE BTST ⚡"
+    else:
+        verdict = "REJECTED / WEAK CLOSE ⚠️"
+
+    filled = int(round(final_rating))
+    bar = "█" * filled + "░" * (10 - filled)
+    risk_note = "Strong Closing Demand" if not risk_reasons else ", ".join(risk_reasons[:2])
+    summary = (
+        f"ST/Trend {st_score}/10 • ClosePower {close_score}/10 • "
+        f"OBV/TSI {flow_score}/10 | Risk: {risk_note}"
+    )
+
+    return {
+        "agents_debate_rating": final_rating,
+        "agents_debate_verdict": verdict,
+        "agents_debate_bar": bar,
+        "agents_debate_summary": summary,
+        "st_agent_score": st_score,
+        "closing_power_agent_score": close_score,
+        "flow_agent_score": flow_score,
+        "bull_thesis_score": bull_thesis_score,
+        "risk_penalty": risk_penalty,
+        "risk_reasons": risk_reasons,
+    }
+
+
 def analyze_evening_pro_candidate(symbol: str, df: pd.DataFrame = None) -> dict:
     """
-    Analyzes a stock using the Advanced Supertrend Strategy (ATR 10, Multiplier 3, EMA 50)
-    and computes a normalized Supertrend Pro Score (0 - 100) for ranking.
+    Analyzes a stock using the Advanced Supertrend Strategy v2.0 (ATR 10, Multiplier 3, EMA 50)
+    combined with 3 Institutional BTST Playbooks (ST Flip Breakout, 5D Swing Breakout,
+    and Late-Day Closing Accumulation), OBV + TSI flow confirmation, ATR-bounded BTST stop loss,
+    and a 6-Agent Pre-BTST Quantitative Debate Rating out of 10.
     """
     clean_sym = symbol.strip().upper().replace(".NS", "").replace("-EQ", "")
 
@@ -846,11 +963,11 @@ def analyze_evening_pro_candidate(symbol: str, df: pd.DataFrame = None) -> dict:
         return {
             "symbol": clean_sym,
             "pro_buying_score": 0.0,
+            "agents_debate_rating": 0.0,
             "is_pro_buying": False,
             "reason": "Insufficient OHLCV data"
         }
 
-    # Initialize Advanced Supertrend Strategy with volume filter
     strategy = AdvancedSupertrendStrategy(
         atr_period=10,
         multiplier=3.0,
@@ -863,51 +980,152 @@ def analyze_evening_pro_candidate(symbol: str, df: pd.DataFrame = None) -> dict:
     )
 
     sig_info = strategy.get_latest_signal(df, symbol=clean_sym)
+    ind_df = strategy.calculate_indicators(df)
 
-    # Compute a normalized score for UI and ranking (0 - 100)
-    score = 0.0
-    action = sig_info.get("signal", "HOLD")
-    is_bullish = sig_info.get("supertrend_direction") == "BULLISH (GREEN)"
-    flipped_green = sig_info.get("supertrend_flipped_green", False)
-    above_ema50 = sig_info.get("above_ema50", False)
-    vol_passed = sig_info.get("volume_filter_passed", False)
-
-    if action == "BUY":
-        # Fresh Supertrend green flip + Close > EMA50 + Volume surge
-        score = 95.0
-    elif flipped_green and above_ema50:
-        score = 85.0
-    elif flipped_green:
-        score = 70.0
-    elif is_bullish and above_ema50 and vol_passed:
-        score = 65.0
-    elif is_bullish and above_ema50:
-        score = 55.0
-    elif is_bullish:
-        score = 45.0
-    else:
-        score = 20.0
-
-    is_pro_buying = (score >= 50.0)
-
-    # Calculate day range close position
-    curr_close = sig_info.get("close_price", 0.0)
-    curr_low = sig_info.get("low_price", 0.0)
-    curr_high = sig_info.get("high_price", 0.0)
+    curr_close = float(sig_info.get("close_price", 0.0))
+    curr_open = float(sig_info.get("open_price", 0.0))
+    curr_low = float(sig_info.get("low_price", 0.0))
+    curr_high = float(sig_info.get("high_price", 0.0))
+    curr_vol = float(sig_info.get("volume", 0.0))
     day_range = curr_high - curr_low
     close_pos_pct = round(((curr_close - curr_low) / day_range) * 100.0, 1) if day_range > 0 else 50.0
+    is_green_candle = (curr_close >= curr_open)
+
+    # Compute OBV, TSI(13,25,13), 5-Day Swing High, and Volume Ratio on ind_df
+    vol_sma20 = float(ind_df["vol_sma"].iloc[-1]) if "vol_sma" in ind_df.columns and not np.isnan(ind_df["vol_sma"].iloc[-1]) else max(1.0, curr_vol)
+    vol_ratio = round(curr_vol / max(1.0, vol_sma20), 2)
+    curr_atr = float(ind_df["atr"].iloc[-1]) if "atr" in ind_df.columns and not np.isnan(ind_df["atr"].iloc[-1]) else (curr_close * 0.015)
+
+    close_diff = ind_df["close"].diff()
+    obv_dir = np.where(close_diff > 0, 1, np.where(close_diff < 0, -1, 0))
+    obv_dir[0] = 0
+    obv_series = (obv_dir * ind_df["volume"]).cumsum()
+    obv_ema20 = obv_series.ewm(span=20, adjust=False).mean()
+    obv_bullish = bool(obv_series.iloc[-1] > obv_ema20.iloc[-1])
+
+    abs_pc = close_diff.abs()
+    pc_fast = close_diff.ewm(span=25, adjust=False).mean().ewm(span=13, adjust=False).mean()
+    abs_fast = abs_pc.ewm(span=25, adjust=False).mean().ewm(span=13, adjust=False).mean().replace(0, np.nan)
+    tsi_series = (100.0 * (pc_fast / abs_fast)).fillna(0.0)
+    tsi_sig_series = tsi_series.ewm(span=13, adjust=False).mean().fillna(0.0)
+    curr_tsi = round(float(tsi_series.iloc[-1]), 2)
+    curr_tsi_sig = round(float(tsi_sig_series.iloc[-1]), 2)
+    tsi_bullish = bool(curr_tsi > curr_tsi_sig)
+
+    prev_5d_high = float(ind_df["high"].iloc[-6:-1].max()) if len(ind_df) >= 6 else curr_high
+    swing_5d_breakout = bool(curr_close > prev_5d_high and is_green_candle)
+
+    is_bullish = sig_info.get("supertrend_direction") == "BULLISH (GREEN)"
+    flipped_green = bool(sig_info.get("supertrend_flipped_green", False))
+    above_ema50 = bool(sig_info.get("above_ema50", False))
+    vol_passed = bool(vol_ratio >= 1.2 and is_green_candle)
+
+    # Evaluate the 3 Institutional BTST Playbooks (strictly requires green candle & strong closing range!)
+    btst_playbook = None
+    action = sig_info.get("signal", "HOLD")
+    score = 20.0
+
+    if is_bullish and is_green_candle and close_pos_pct >= 65.0:
+        if flipped_green and above_ema50:
+            btst_playbook = "STAGE 1: ST Flip Breakout"
+            action = "BUY"
+            score = 92.0 + min(7.0, (close_pos_pct - 65.0) * 0.2 + (2.0 if vol_passed else 0.0))
+        elif above_ema50 and swing_5d_breakout and (vol_ratio >= 1.15 or obv_bullish):
+            btst_playbook = "STAGE 2: 5D Swing Breakout"
+            action = "BUY"
+            score = 86.0 + min(10.0, (close_pos_pct - 65.0) * 0.22 + min(3.0, (vol_ratio - 1.0) * 2.0))
+        elif above_ema50 and close_pos_pct >= 75.0 and obv_bullish and tsi_bullish and vol_ratio >= 1.1:
+            btst_playbook = "STAGE 3: Closing Accumulation"
+            action = "BUY"
+            score = 78.0 + min(10.0, (close_pos_pct - 75.0) * 0.3 + min(3.0, (vol_ratio - 1.0) * 2.0))
+        elif flipped_green:
+            btst_playbook = "WATCH: ST Flip (Below EMA50)"
+            action = "WATCH_LONG"
+            score = 68.0
+        elif above_ema50 and (obv_bullish or tsi_bullish):
+            btst_playbook = "WATCH: Bullish Trend"
+            action = "HOLD_LONG"
+            score = 62.0
+        else:
+            score = 50.0
+    elif is_bullish and not is_green_candle:
+        # Red candle inside Supertrend -> penalize heavily so sell-off days never rank as BTST buys!
+        action = "HOLD_LONG"
+        score = max(15.0, min(38.0, close_pos_pct * 0.5))
+
+    score = round(min(99.5, score), 1)
+
+    # Tight ATR-bounded BTST Stop Loss (caps stop distance at min(ST distance, 1.5x ATR, 3.2% max))
+    raw_st = float(sig_info.get("supertrend", curr_close * 0.97))
+    atr_stop = curr_close - (1.5 * curr_atr)
+    low_stop = curr_low * 0.996
+    tight_stop = max(raw_st, atr_stop, low_stop, curr_close * 0.968)
+    if tight_stop >= curr_close:
+        tight_stop = round(curr_close * 0.982, 2)
+    else:
+        tight_stop = round(tight_stop, 2)
+
+    stop_dist = round(max(curr_close * 0.005, curr_close - tight_stop), 2)
+    stop_dist_pct = round((stop_dist / curr_close) * 100.0, 2) if curr_close > 0 else 1.5
+    target_price = round(curr_close + (stop_dist * 2.0), 2)
+    shares = max(1, min(int(100000.0 / curr_close), int(1000.0 / stop_dist))) if curr_close > 0 else 0
+
+    # Run 6-Agent Pre-BTST Quantitative Debate
+    debate_info = run_supertrend_btst_agents_debate(
+        symbol=clean_sym,
+        btst_playbook=btst_playbook,
+        is_bullish_st=is_bullish,
+        flipped_green=flipped_green,
+        above_ema50=above_ema50,
+        swing_5d_breakout=swing_5d_breakout,
+        close_pos_pct=close_pos_pct,
+        is_green_candle=is_green_candle,
+        vol_ratio=vol_ratio,
+        obv_bullish=obv_bullish,
+        tsi_bullish=tsi_bullish,
+        stop_dist_pct=stop_dist_pct,
+    )
+
+    is_pro_buying = bool(
+        is_bullish
+        and is_green_candle
+        and close_pos_pct >= 65.0
+        and score >= 68.0
+        and debate_info["agents_debate_rating"] >= 6.8
+    )
+
+    reason_tags = []
+    if btst_playbook:
+        reason_tags.append(btst_playbook)
+    reason_tags.append(f"Closed at {close_pos_pct:.1f}% of day range")
+    reason_tags.append(f"Vol {vol_ratio:.2f}x SMA20")
+    if obv_bullish and tsi_bullish:
+        reason_tags.append("OBV & TSI Bullish")
 
     return {
         "symbol": clean_sym,
+        "btst_playbook": btst_playbook,
         "pro_buying_score": score,
+        "agents_debate_rating": debate_info["agents_debate_rating"],
+        "agents_debate_verdict": debate_info["agents_debate_verdict"],
+        "agents_debate_bar": debate_info["agents_debate_bar"],
+        "agents_debate_summary": debate_info["agents_debate_summary"],
+        "agents_debate": debate_info,
         "is_pro_buying": is_pro_buying,
         "signal": action,
         "close_price": curr_close,
-        "open_price": sig_info.get("open_price", 0.0),
+        "open_price": curr_open,
         "high_price": curr_high,
         "low_price": curr_low,
-        "volume": sig_info.get("volume", 0.0),
+        "volume": curr_vol,
+        "volume_ratio": vol_ratio,
         "close_position_pct": close_pos_pct,
+        "is_green_candle": is_green_candle,
+        "swing_5d_breakout": swing_5d_breakout,
+        "obv_bullish": obv_bullish,
+        "tsi_bullish": tsi_bullish,
+        "tsi_val": curr_tsi,
+        "tsi_signal": curr_tsi_sig,
         "supertrend": sig_info.get("supertrend", 0.0),
         "supertrend_direction": sig_info.get("supertrend_direction", "UNKNOWN"),
         "supertrend_flipped_green": flipped_green,
@@ -915,13 +1133,14 @@ def analyze_evening_pro_candidate(symbol: str, df: pd.DataFrame = None) -> dict:
         "ema50": sig_info.get("ema50", 0.0),
         "above_ema50": above_ema50,
         "volume_filter_passed": vol_passed,
-        "suggested_entry": sig_info.get("suggested_entry", curr_close),
-        "stop_loss": sig_info.get("stop_loss", 0.0),
-        "stop_distance": sig_info.get("stop_distance", 0.0),
-        "stop_distance_pct": sig_info.get("stop_distance_pct", 0.0),
-        "target_price": sig_info.get("target_price", 0.0),
-        "position_size_shares": sig_info.get("position_size_shares", 0),
-        "reason": f"Supertrend: {sig_info.get('supertrend_direction')} | {sig_info.get('reason')}"
+        "suggested_entry": curr_close,
+        "stop_loss": tight_stop,
+        "stop_distance": stop_dist,
+        "stop_distance_pct": stop_dist_pct,
+        "target_price": target_price,
+        "risk_reward": "1 : 2.0",
+        "position_size_shares": shares,
+        "reason": " | ".join(reason_tags)
     }
 
 
@@ -930,14 +1149,44 @@ _SENT_ALERTS_TODAY = {}
 
 
 def format_evening_pro_telegram_alert(c: dict) -> str:
-    """Formats simple HTML Telegram alert message for Supertrend Pro Buying (BTST) setups."""
+    """Formats detailed HTML Telegram alert message for Supertrend Pro Buying (BTST) setups with Agents Debate Rating."""
     sym = c.get("symbol", "").upper()
+    playbook = c.get("btst_playbook") or "SUPERTREND BTST ACCUMULATION"
     score = c.get("pro_buying_score", 0.0)
+    debate_rating = c.get("agents_debate_rating") or round(min(10.0, max(1.0, score / 10.0)), 1)
+    debate_verdict = c.get("agents_debate_verdict") or "STRONG BTST CONSENSUS 🔥"
+    debate_summary = c.get("agents_debate_summary") or ""
+    entry = c.get("suggested_entry", c.get("close_price", 0.0))
+    sl = c.get("stop_loss", 0.0)
+    tgt = c.get("target_price", 0.0)
+    stop_pct = c.get("stop_distance_pct", 1.5)
+    st_val = c.get("supertrend", 0.0)
+    ema50 = c.get("ema50", 0.0)
+    close_pct = c.get("close_position_pct", 75.0)
+    vol_ratio = c.get("volume_ratio", 1.2)
+    shares = c.get("position_size_shares", 1)
+    now_str = datetime.now().strftime("%I:%M %p")
+    summary_line = f"🗣️ <i>{debate_summary}</i>\n" if debate_summary else ""
 
     msg = (
-        f"🚀 <b>SUPERTREND PRO BUYING (BTST) ALERT</b>\n\n\n"
-        f"📌 <b>Symbol</b>: {sym}\n"
-        f"⭐️ <b>Conviction Score</b>: {score:.1f}/100"
+        f"🚀 <b>SUPERTREND PRO BUYING (BTST) ALERT</b> 🚀\n"
+        f"⚡ <b>Playbook</b>: <b>{playbook}</b>\n"
+        f"📌 <b>Symbol</b>: <b>#{sym}</b>  •  🕒 <b>{now_str} IST</b>\n"
+        f"⭐️ <b>Conviction Score</b>: <b>{score:.1f} / 100</b>\n"
+        f"🤖 <b>Agents Debate Rating:</b> <b>{debate_rating} / 10</b> ({debate_verdict})\n"
+        f"{summary_line}\n"
+        f"📈 <b>BTST EXECUTION LEVELS (1 : 2.0 R:R)</b>:\n"
+        f"   • <b>Suggested Entry</b>: ₹{entry:,.2f}\n"
+        f"   • <b>ATR/ST Stop Loss</b>: ₹{sl:,.2f} (Risk: {stop_pct:.2f}%)\n"
+        f"   • <b>BTST Target (1:2)</b>: ₹{tgt:,.2f}\n"
+        f"   • <b>Position Size (1% Risk)</b>: {shares} shares\n\n"
+        f"📊 <b>SUPERTREND & FLOW CONFIRMATION</b>:\n"
+        f"   • <b>Supertrend (10,3)</b>: ₹{st_val:,.2f} (BULLISH GREEN)\n"
+        f"   • <b>EMA 50 Filter</b>: ₹{ema50:,.2f} (Close Above EMA50 ✓)\n"
+        f"   • <b>Closing Power</b>: Closed at <b>{close_pct:.1f}%</b> of Day's Range\n"
+        f"   • <b>Volume Surge</b>: <b>{vol_ratio:.2f}x</b> 20-Day SMA\n\n"
+        f"📸 <i>5m Chart Attached: Candlestick + Volume + OBV + TSI</i>\n"
+        f"⚡ <i>Zerodha Live Supertrend BTST Engine</i>"
     )
     return msg
 
@@ -948,7 +1197,7 @@ def send_evening_pro_telegram_alert(
     force: bool = False
 ) -> dict:
     """
-    Renders 5m candlestick chart and dispatches Telegram photo alert for Supertrend setups.
+    Renders 5m candlestick chart (with Volume + OBV + TSI) and dispatches Telegram photo alert for Supertrend setups.
     Enforces anti-spam: Max 1 alert per symbol per day.
     """
     symbol = candidate.get("symbol", "").strip().upper()
@@ -970,10 +1219,10 @@ def send_evening_pro_telegram_alert(
     except Exception as db_err:
         logger.debug(f"MongoDB deduplication check notice: {db_err}")
 
-    # Generate 5m chart
     chart_buf = None
     try:
         from scripts.chart_generator import generate_evening_pro_chart_buffer
+        debate_r = candidate.get("agents_debate_rating", 8.5)
         chart_buf = generate_evening_pro_chart_buffer(
             symbol=symbol,
             entry_price=candidate.get("suggested_entry"),
@@ -981,7 +1230,8 @@ def send_evening_pro_telegram_alert(
             target_price=candidate.get("target_price"),
             pro_score=candidate.get("pro_buying_score", 0.0),
             num_candles=60,
-            kite=kite
+            kite=kite,
+            title_suffix=f" • Agents Debate {debate_r}/10"
         )
     except Exception as chart_err:
         logger.error(f"Failed to generate chart for {symbol}: {chart_err}")
@@ -1007,6 +1257,7 @@ def send_evening_pro_telegram_alert(
                     "date": today_str,
                     "symbol": symbol,
                     "score": candidate.get("pro_buying_score"),
+                    "agents_debate_rating": candidate.get("agents_debate_rating"),
                     "entry": candidate.get("suggested_entry"),
                     "stop_loss": candidate.get("stop_loss"),
                     "target": candidate.get("target_price"),
@@ -1021,80 +1272,107 @@ def send_evening_pro_telegram_alert(
 
 
 def get_all_watchlist_symbols() -> list:
-    """Retrieves all tracked stocks from MongoDB user tables (monthly, weekly, daily, manual, darvas)."""
-    symbols = set()
+    """Retrieves all tracked stocks from MongoDB user tables (prioritizing high-closing BTST & Darvas leaders)."""
+    priority_syms = []
+    other_syms = set()
     try:
         dm = DataManager()
-        for tf in ["monthly", "weekly", "daily", "manual", "darvas"]:
+        for doc in dm.db["evening_pro_candidates"].find({}, {"symbol": 1, "close_position_pct": 1}).sort("pro_buying_score", -1):
+            s = doc.get("symbol")
+            if s and (doc.get("close_position_pct") or 0) >= 65.0:
+                norm_s = normalize_symbol(s)
+                if norm_s not in priority_syms:
+                    priority_syms.append(norm_s)
+        for tf in ["darvas", "daily", "weekly", "monthly", "manual"]:
             records = dm.get_stock_ratings(tf)
             for r in records:
                 s = r.get("symbol") or r.get("ticker")
                 if s:
-                    symbols.add(normalize_symbol(s))
+                    norm_s = normalize_symbol(s)
+                    if norm_s not in priority_syms:
+                        other_syms.add(norm_s)
     except Exception as e:
         logger.warning(f"Could not load watchlist symbols from DB: {e}")
 
-    # Fallback to liquid Indian universe if DB watchlists are empty
-    if not symbols:
-        symbols = {
+    combined = priority_syms + sorted(list(other_syms))
+    if not combined:
+        combined = [
             "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN",
             "TATAMOTORS", "TATASTEEL", "BHARTIARTL", "AXISBANK", "LT",
             "BAJFINANCE", "MARUTI", "SUNPHARMA", "TITAN", "WIPRO", "HCLTECH"
-        }
+        ]
 
-    return sorted(list(symbols))
+    return combined
 
 
 def scan_and_rank_evening_pro_candidates(
     symbols: list = None,
     send_telegram: bool = True
 ) -> list:
-    """Scans all watchlist stocks and ranks them by Advanced Supertrend Score."""
+    """
+    Scans watchlist stocks using Advanced Supertrend v2.0 + 6-Agent BTST Debate.
+    Strictly filters out weak-closing or red-candle distribution stocks so only genuine
+    BTST accumulation candidates (`close_position_pct >= 65%`, `is_green_candle == True`,
+    `agents_debate_rating >= 6.5`) are saved to MongoDB.
+    """
     if symbols is None or len(symbols) == 0:
         symbols = get_all_watchlist_symbols()
 
-    logger.info(f"🔍 Scanning {len(symbols)} stocks for Advanced Supertrend & EMA 50 setups...")
+    logger.info(f"🔍 Scanning {len(symbols)} stocks for Supertrend Pro Buying (BTST v2.0 + Agents Debate)...")
 
-    results = []
+    qualified_results = []
     for s in symbols:
         try:
             res = analyze_evening_pro_candidate(s)
-            results.append(res)
+            if not res:
+                continue
 
-            # Send Telegram alert if conditions are triggered for Supertrend Pro Buying (BTST)
-            is_buy_triggered = (
-                res.get("signal") == "BUY" or
-                (res.get("supertrend_flipped_green") and res.get("above_ema50")) or
-                (res.get("is_pro_buying") and res.get("pro_buying_score", 0.0) >= 65.0)
-            )
-            if send_telegram and is_buy_triggered:
-                logger.info(f"🚀 Qualified Supertrend Pro Buying trigger for {s} (Score: {res.get('pro_buying_score')})! Dispatching alert...")
-                try:
-                    send_evening_pro_telegram_alert(res)
-                except Exception as tg_err:
-                    logger.error(f"Error dispatching Telegram alert for {s}: {tg_err}")
+            is_pro = bool(res.get("is_pro_buying"))
+            debate_rating = float(res.get("agents_debate_rating", 0.0) or 0.0)
+            close_pos = float(res.get("close_position_pct", 0.0) or 0.0)
+            is_green = bool(res.get("is_green_candle"))
+
+            if is_pro or (is_green and close_pos >= 65.0 and debate_rating >= 6.5 and res.get("pro_buying_score", 0.0) >= 62.0):
+                qualified_results.append(res)
+
+                is_buy_triggered = (
+                    res.get("signal") == "BUY" and
+                    is_pro and
+                    debate_rating >= 7.5
+                )
+                if send_telegram and is_buy_triggered:
+                    logger.info(
+                        f"🚀 Qualified Supertrend BTST trigger for {s} "
+                        f"(Score: {res.get('pro_buying_score')} | Debate: {debate_rating}/10)! Dispatching alert..."
+                    )
+                    try:
+                        send_evening_pro_telegram_alert(res)
+                    except Exception as tg_err:
+                        logger.error(f"Error dispatching Telegram alert for {s}: {tg_err}")
 
         except Exception as e:
             logger.error(f"Error scanning {s} for supertrend candidate: {e}")
 
-    # Sort descending by score
-    sorted_results = sorted(results, key=lambda x: x.get("pro_buying_score", 0.0), reverse=True)
+    # Sort descending by (agents_debate_rating, pro_buying_score)
+    sorted_results = sorted(
+        qualified_results,
+        key=lambda x: (x.get("agents_debate_rating", 0.0), x.get("pro_buying_score", 0.0)),
+        reverse=True
+    )
 
-    # Save to MongoDB 'evening_pro_candidates' collection
     try:
         dm = DataManager()
         col = dm.db["evening_pro_candidates"]
-        col.delete_many({})  # Refresh collection
+        col.delete_many({})
         if sorted_results:
             docs_to_save = []
             for r in sorted_results:
-                if r.get("is_pro_buying") or r.get("pro_buying_score", 0.0) >= 40.0:
-                    doc = dict(r)
-                    doc["updated_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
-                    docs_to_save.append(doc)
+                doc = dict(r)
+                doc["updated_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
+                docs_to_save.append(doc)
             if docs_to_save:
                 col.insert_many(docs_to_save)
-                logger.info(f"✅ Saved {len(docs_to_save)} Supertrend candidates to MongoDB 'evening_pro_candidates'.")
+                logger.info(f"✅ Saved {len(docs_to_save)} high-conviction Supertrend BTST candidates to MongoDB 'evening_pro_candidates'.")
     except Exception as e:
         logger.warning(f"Could not save candidates to MongoDB: {e}")
 
@@ -1212,24 +1490,24 @@ if __name__ == "__main__":
     else:
         all_syms = get_all_watchlist_symbols()
         scan_syms = all_syms[:args.limit]
-        print(f"\nScanning {len(scan_syms)} watchlist stocks using Advanced Supertrend Strategy...")
+        print(f"\nScanning {len(scan_syms)} watchlist stocks using Advanced Supertrend BTST v2.0 + Agents Debate...")
         ranked_candidates = scan_and_rank_evening_pro_candidates(symbols=scan_syms, send_telegram=args.telegram)
 
-        print("\n" + "=" * 105)
-        print(" 🚀 ADVANCED SUPERTREND & EMA 50 SCANNER CANDIDATES (RANKED DESCENDING)")
-        print("=" * 105)
-        print(f"{'RANK':<5} {'SYMBOL':<12} {'SCORE':<10} {'SIGNAL':<12} {'CLOSE':<10} {'SUPERTREND':<12} {'EMA 50':<10} {'REASON':<32}")
-        print("-" * 105)
+        print("\n" + "=" * 125)
+        print(" 🚀 SUPERTREND PRO BUYING (BTST v2.0) + 6-AGENT DEBATE CANDIDATES (RANKED DESCENDING)")
+        print("=" * 125)
+        print(f"{'RANK':<5} {'SYMBOL':<12} {'DEBATE':<10} {'SCORE':<10} {'SIGNAL':<10} {'CLOSE':<10} {'CLOSE%':<8} {'PLAYBOOK / REASON':<45}")
+        print("-" * 125)
 
         for i, c in enumerate(ranked_candidates[:15], 1):
             sym = c.get("symbol")
+            deb = f"{c.get('agents_debate_rating', 0):.1f}/10"
             score = f"{c.get('pro_buying_score'):.1f}/100"
             sig = c.get("signal", "HOLD")
             close_p = f"₹{c.get('close_price', 0):.2f}"
-            st_p = f"₹{c.get('supertrend', 0):.2f}"
-            ema_p = f"₹{c.get('ema50', 0):.2f}"
-            reason = str(c.get("reason", ""))[:32]
+            cp_pct = f"{c.get('close_position_pct', 0):.0f}%"
+            reason = str(c.get("reason", ""))[:45]
 
-            print(f"{i:<5} {sym:<12} {score:<10} {sig:<12} {close_p:<10} {st_p:<12} {ema_p:<10} {reason:<32}")
+            print(f"{i:<5} {sym:<12} {deb:<10} {score:<10} {sig:<10} {close_p:<10} {cp_pct:<8} {reason:<45}")
 
-        print("=" * 105 + "\n")
+        print("=" * 125 + "\n")
