@@ -53,7 +53,6 @@ _stock_returns_cache = {
 }
 
 def _get_stock_returns_cached(stock_symbols: list) -> dict:
-    import time, yfinance as yf
     now = time.time()
     if now - _stock_returns_cache["timestamp"] < 600 and _stock_returns_cache["data"]:
         return _stock_returns_cache["data"]
@@ -63,54 +62,43 @@ def _get_stock_returns_cached(stock_symbols: list) -> dict:
         return returns_map
 
     try:
-        all_syms = [s if s.endswith(".NS") else s + ".NS" for s in stock_symbols if s]
-        if all_syms:
-            df = yf.download(all_syms, period="1mo", progress=False)
-            close_df = df["Close"] if (hasattr(df, "__getitem__") and "Close" in df) else df
-            if hasattr(close_df, "columns"):
-                close_df = close_df.dropna(how="all").ffill().bfill()
-                for sym in stock_symbols:
-                    col = sym if sym.endswith(".NS") else sym + ".NS"
-                    if col in close_df.columns:
-                        s_series = close_df[col].dropna()
-                        if len(s_series) >= 2:
-                            p_latest = float(s_series.iloc[-1])
-                            p_prev_day = float(s_series.iloc[-2])
-                            p_week_ago = float(s_series.iloc[-6]) if len(s_series) >= 6 else float(s_series.iloc[0])
-                            p_month_ago = float(s_series.iloc[0])
+        from tradingagents.dataflows.zerodha import get_zerodha_credentials, is_token_valid
+        creds = get_zerodha_credentials()
+        api_key = creds.get("api_key")
+        access_token = creds.get("access_token")
+        api_url = creds.get("api_url", "https://api.kite.trade")
 
-                            daily_pct = round(((p_latest - p_prev_day) / p_prev_day) * 100.0, 2) if p_prev_day > 0 else 0.0
-                            weekly_pct = round(((p_latest - p_week_ago) / p_week_ago) * 100.0, 2) if p_week_ago > 0 else 0.0
-                            monthly_pct = round(((p_latest - p_month_ago) / p_month_ago) * 100.0, 2) if p_month_ago > 0 else 0.0
+        if api_key and access_token and is_token_valid(api_key, access_token, api_url):
+            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=35)).strftime("%Y-%m-%d")
+            for sym in stock_symbols:
+                if not sym:
+                    continue
+                try:
+                    df = get_zerodha_stock_df(sym.upper(), start_date, end_date, interval="day")
+                    if not df.empty and "Close" in df.columns and len(df) >= 2:
+                        s_series = df["Close"].dropna()
+                        p_latest = float(s_series.iloc[-1])
+                        p_prev_day = float(s_series.iloc[-2])
+                        p_week_ago = float(s_series.iloc[-6]) if len(s_series) >= 6 else float(s_series.iloc[0])
+                        p_month_ago = float(s_series.iloc[0])
 
-                            returns_map[sym] = {
-                                "daily_change_pct": daily_pct,
-                                "weekly_change_pct": weekly_pct,
-                                "monthly_change_pct": monthly_pct
-                            }
-            elif hasattr(close_df, "iloc"):
-                s_series = close_df.dropna()
-                if len(s_series) >= 2:
-                    p_latest = float(s_series.iloc[-1])
-                    p_prev_day = float(s_series.iloc[-2])
-                    p_week_ago = float(s_series.iloc[-6]) if len(s_series) >= 6 else float(s_series.iloc[0])
-                    p_month_ago = float(s_series.iloc[0])
+                        daily_pct = round(((p_latest - p_prev_day) / p_prev_day) * 100.0, 2) if p_prev_day > 0 else 0.0
+                        weekly_pct = round(((p_latest - p_week_ago) / p_week_ago) * 100.0, 2) if p_week_ago > 0 else 0.0
+                        monthly_pct = round(((p_latest - p_month_ago) / p_month_ago) * 100.0, 2) if p_month_ago > 0 else 0.0
 
-                    daily_pct = round(((p_latest - p_prev_day) / p_prev_day) * 100.0, 2) if p_prev_day > 0 else 0.0
-                    weekly_pct = round(((p_latest - p_week_ago) / p_week_ago) * 100.0, 2) if p_week_ago > 0 else 0.0
-                    monthly_pct = round(((p_latest - p_month_ago) / p_month_ago) * 100.0, 2) if p_month_ago > 0 else 0.0
-
-                    for sym in stock_symbols:
                         returns_map[sym] = {
                             "daily_change_pct": daily_pct,
                             "weekly_change_pct": weekly_pct,
                             "monthly_change_pct": monthly_pct
                         }
+                except Exception:
+                    continue
         if returns_map:
             _stock_returns_cache["timestamp"] = now
             _stock_returns_cache["data"] = returns_map
-    except Exception as yf_err:
-        print(f"[RACE API] Stock returns calculation notice: {yf_err}")
+    except Exception as z_err:
+        print(f"[RACE API] Zerodha stock returns calculation notice: {z_err}")
         if _stock_returns_cache["data"]:
             return _stock_returns_cache["data"]
 
@@ -125,51 +113,19 @@ class WatchlistRequest(BaseModel):
 
 def get_benchmark_ticker(ticker: str) -> str:
     ticker = ticker.upper()
-    if ticker.endswith(".NS"):
-        return "^NSEI"
-    elif ticker.endswith(".BO"):
-        return "^BSESN"
-    else:
-        return "SPY"
+    if ticker.endswith(".BO"):
+        return "SENSEX"
+    return "NIFTY 50"
 
 def fetch_history(ticker: str, start_date: str, end_date: str, interval: str = "10minute") -> pd.DataFrame:
     df = pd.DataFrame()
-    zerodha_configured = False
     try:
         from tradingagents.dataflows.zerodha import get_zerodha_credentials
         creds = get_zerodha_credentials()
         if creds.get("api_key") and (creds.get("access_token") or creds.get("request_token")):
-            zerodha_configured = True
-    except Exception:
-        pass
-
-    if zerodha_configured:
-        try:
             df = get_zerodha_stock_df(ticker.upper(), start_date, end_date, interval=interval)
-        except Exception as e:
-            print(f"[WARNING] Failed to fetch {interval} chart data from Zerodha for {ticker}: {e}")
-
-    if df.empty:
-        try:
-            import yfinance as yf
-            from tradingagents.dataflows.symbol_utils import normalize_symbol
-            from tradingagents.dataflows.stockstats_utils import yf_retry
-            canonical = normalize_symbol(ticker)
-            ticker_obj = yf.Ticker(canonical)
-            yf_interval = "15m" if interval == "10minute" else "1d"
-            hist = yf_retry(lambda: ticker_obj.history(start=start_date, end=end_date, interval=yf_interval))
-            if not hist.empty:
-                hist = hist.reset_index()
-                date_col = None
-                for candidate in ("Datetime", "Date", "index", "date"):
-                    if candidate in hist.columns:
-                        date_col = candidate
-                        break
-                if date_col:
-                    hist = hist.rename(columns={date_col: "Date"})
-                df = hist[["Date", "Open", "High", "Low", "Close", "Volume"]]
-        except Exception as e:
-            print(f"[WARNING] Failed to fetch yfinance data for {ticker}: {e}")
+    except Exception as e:
+        print(f"[WARNING] Failed to fetch {interval} chart data from Zerodha for {ticker}: {e}")
             
     if not df.empty:
         df = df.rename(columns={"Date": "timestamp"})
@@ -562,20 +518,27 @@ def run_evening_pro_monitor_loop():
 def run_paper_trading_loop():
     """
     Background daemon loop running every 5 minutes.
-    Fetches latest candles for tracked stocks, evaluates all 10 automated paper trading strategies,
+    Fetches latest candles for tracked stocks via Zerodha API, evaluates all 10 automated paper trading strategies,
     and executes paper trades & saves portfolio snapshots into MongoDB.
     """
     time.sleep(10)
-    print("[PAPER-LOOP] Starting automated 5-minute Paper Trading strategy engine loop...")
+    print("[PAPER-LOOP] Starting automated 5-minute Paper Trading strategy engine loop (Zerodha API)...")
     while True:
         try:
             from data_manager import DataManager
-            import yfinance as yf
-            import pandas as pd
+            from tradingagents.dataflows.zerodha import get_zerodha_credentials, is_token_valid, get_instrument_token
 
             dm = DataManager()
             paper_engine = get_paper_engine()
             if not paper_engine:
+                time.sleep(60)
+                continue
+
+            creds = get_zerodha_credentials()
+            api_key = creds.get("api_key")
+            access_token = creds.get("access_token")
+            api_url = creds.get("api_url", "https://api.kite.trade")
+            if not (api_key and access_token and is_token_valid(api_key, access_token, api_url)):
                 time.sleep(60)
                 continue
 
@@ -591,50 +554,38 @@ def run_paper_trading_loop():
                     pass
 
             sym_list = list(symbols)[:60]
-            if sym_list:
-                tickers = [s + ".NS" if not s.endswith(".NS") else s for s in sym_list]
-                df_all = yf.download(tickers, period="1mo", progress=False)
+            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=35)).strftime("%Y-%m-%d")
 
-                for sym in sym_list:
-                    try:
-                        ticker_sym = sym if sym.endswith(".NS") else sym + ".NS"
-                        if hasattr(df_all, "columns") and isinstance(df_all.columns, pd.MultiIndex):
-                            if ticker_sym in df_all["Close"].columns:
-                                s_df = pd.DataFrame({
-                                    "open": df_all["Open"][ticker_sym],
-                                    "high": df_all["High"][ticker_sym],
-                                    "low": df_all["Low"][ticker_sym],
-                                    "close": df_all["Close"][ticker_sym],
-                                    "volume": df_all["Volume"][ticker_sym]
-                                }).dropna()
-                            else:
-                                continue
-                        else:
-                            s_df = df_all[['Open', 'High', 'Low', 'Close', 'Volume']].rename(
-                                columns={'Open':'open', 'High':'high', 'Low':'low', 'Close':'close', 'Volume':'volume'}
-                            ).dropna()
+            for sym in sym_list:
+                try:
+                    raw_df = get_zerodha_stock_df(sym, start_date, end_date, interval="day")
+                    if raw_df.empty or len(raw_df) < 15:
+                        continue
+                    s_df = raw_df[["Open", "High", "Low", "Close", "Volume"]].rename(
+                        columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
+                    ).dropna()
 
-                        if len(s_df) >= 15:
-                            c_last = s_df.iloc[-1]
-                            o_val = float(c_last['open'].iloc[0] if hasattr(c_last['open'], 'iloc') else c_last['open'])
-                            h_val = float(c_last['high'].iloc[0] if hasattr(c_last['high'], 'iloc') else c_last['high'])
-                            l_val = float(c_last['low'].iloc[0] if hasattr(c_last['low'], 'iloc') else c_last['low'])
-                            c_val = float(c_last['close'].iloc[0] if hasattr(c_last['close'], 'iloc') else c_last['close'])
-                            v_val = float(c_last['volume'].iloc[0] if hasattr(c_last['volume'], 'iloc') else c_last['volume'])
+                    if len(s_df) >= 15:
+                        c_last = s_df.iloc[-1]
+                        try:
+                            inst_token = get_instrument_token(sym)
+                        except Exception:
+                            inst_token = abs(hash(sym)) % 1000000
 
-                            candle = {
-                                "instrument_token": abs(hash(sym)) % 1000000,
-                                "symbol": sym,
-                                "open": o_val,
-                                "high": h_val,
-                                "low": l_val,
-                                "close": c_val,
-                                "volume": v_val,
-                                "timestamp": datetime.datetime.utcnow()
-                            }
-                            paper_engine.on_candle(candle, s_df)
-                    except Exception as s_err:
-                        pass
+                        candle = {
+                            "instrument_token": inst_token,
+                            "symbol": sym,
+                            "open": float(c_last["open"]),
+                            "high": float(c_last["high"]),
+                            "low": float(c_last["low"]),
+                            "close": float(c_last["close"]),
+                            "volume": float(c_last["volume"]),
+                            "timestamp": datetime.datetime.utcnow()
+                        }
+                        paper_engine.on_candle(candle, s_df)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[PAPER-LOOP] Note on background paper trading loop: {e}")
 
@@ -947,6 +898,257 @@ def get_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     return jobs[job_id]
 
+@app.get("/api/analyze/stream/{ticker}")
+async def stream_multi_agent_analysis(
+    ticker: str,
+    asset_type: str = "stock",
+    analysts: str = "market,social,news,fundamentals"
+):
+    """
+    Server-Sent Events (SSE) endpoint (Book Chapter 8 & Chapter 3 Observability/Interruptibility).
+    Streams live step-by-step updates from the 12-agent LangGraph TradingAgentsGraph as each node finishes.
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    import json
+    import queue
+
+    selected_analysts = [a.strip() for a in analysts.split(",") if a.strip()]
+    clean_ticker_lookup = ticker.strip().upper()
+
+    event_queue: queue.Queue = queue.Queue()
+    cancel_flag = threading.Event()
+
+    def _extract_node_summary(node_name: str, state_delta: dict) -> dict:
+        payload = {
+            "node": node_name,
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "report": "",
+            "category": "analyst"
+        }
+        if not isinstance(state_delta, dict):
+            return payload
+
+        if state_delta.get("market_report"):
+            payload["report"] = state_delta["market_report"]
+            payload["category"] = "analyst"
+        elif state_delta.get("sentiment_report"):
+            payload["report"] = state_delta["sentiment_report"]
+            payload["category"] = "analyst"
+        elif state_delta.get("news_report"):
+            payload["report"] = state_delta["news_report"]
+            payload["category"] = "analyst"
+        elif state_delta.get("fundamentals_report"):
+            payload["report"] = state_delta["fundamentals_report"]
+            payload["category"] = "analyst"
+        elif "investment_debate_state" in state_delta and isinstance(state_delta["investment_debate_state"], dict):
+            deb = state_delta["investment_debate_state"]
+            payload["report"] = deb.get("judge_decision") or deb.get("current_response") or deb.get("history", "")
+            payload["category"] = "debate"
+        elif state_delta.get("investment_plan"):
+            payload["report"] = state_delta["investment_plan"]
+            payload["category"] = "manager"
+        elif state_delta.get("trader_investment_plan"):
+            payload["report"] = state_delta["trader_investment_plan"]
+            payload["category"] = "trader"
+        elif "risk_debate_state" in state_delta and isinstance(state_delta["risk_debate_state"], dict):
+            rdeb = state_delta["risk_debate_state"]
+            payload["report"] = rdeb.get("judge_decision") or rdeb.get("current_aggressive_response") or rdeb.get("current_conservative_response") or rdeb.get("current_neutral_response") or rdeb.get("history", "")
+            payload["category"] = "risk"
+        elif state_delta.get("final_trade_decision"):
+            payload["report"] = state_delta["final_trade_decision"]
+            payload["category"] = "final"
+        elif "messages" in state_delta and state_delta["messages"]:
+            last_msg = state_delta["messages"][-1]
+            content = getattr(last_msg, "content", "")
+            if isinstance(content, list):
+                content = " ".join(str(x.get("text", x) if isinstance(x, dict) else x) for x in content)
+            payload["report"] = str(content or "")
+        return payload
+
+    def _worker():
+        try:
+            event_queue.put({
+                "type": "start",
+                "ticker": clean_ticker_lookup,
+                "analysts": selected_analysts,
+                "message": f"Initializing 12-Agent LangGraph Debate for {clean_ticker_lookup}..."
+            })
+            config = DEFAULT_CONFIG.copy()
+            set_config(config)
+            graph = TradingAgentsGraph(selected_analysts=selected_analysts, config=config, debug=False)
+            analysis_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            instrument_context = graph.resolve_instrument_context(clean_ticker_lookup, asset_type)
+            init_agent_state = graph.propagator.create_initial_state(
+                clean_ticker_lookup, analysis_date, asset_type=asset_type, instrument_context=instrument_context
+            )
+            args = graph.propagator.get_graph_args()
+
+            final_state = {}
+            for chunk in graph.graph.stream(init_agent_state, stream_mode="updates", **args):
+                if cancel_flag.is_set():
+                    break
+                if isinstance(chunk, dict):
+                    for node_name, node_delta in chunk.items():
+                        if isinstance(node_delta, dict):
+                            final_state.update(node_delta)
+                        if "Clear" in node_name or "tools" in node_name.lower():
+                            event_queue.put({
+                                "type": "tool",
+                                "node": node_name,
+                                "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+                            })
+                            continue
+                        summary = _extract_node_summary(node_name, node_delta)
+                        if summary.get("report"):
+                            event_queue.put({
+                                "type": "step",
+                                **summary
+                            })
+
+            if not cancel_flag.is_set():
+                decision_text = final_state.get("final_trade_decision", "")
+                signal = ""
+                if decision_text:
+                    try:
+                        signal = graph.process_signal(decision_text)
+                    except Exception:
+                        signal = ""
+                event_queue.put({
+                    "type": "complete",
+                    "ticker": clean_ticker_lookup,
+                    "signal": signal,
+                    "final_trade_decision": decision_text,
+                    "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+                })
+        except Exception as e:
+            event_queue.put({
+                "type": "error",
+                "message": str(e),
+                "timestamp": datetime.datetime.now().strftime("%H:%M:%S")
+            })
+        finally:
+            event_queue.put(None)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    async def _event_generator():
+        try:
+            while True:
+                while event_queue.empty():
+                    if cancel_flag.is_set():
+                        return
+                    await asyncio.sleep(0.25)
+                item = event_queue.get()
+                if item is None:
+                    break
+                yield f"data: {json.dumps(item)}\n\n"
+        except asyncio.CancelledError:
+            cancel_flag.set()
+            raise
+        finally:
+            cancel_flag.set()
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@app.get("/api/dashboard/summary")
+def get_dashboard_summary():
+    """
+    Single aggregated endpoint replacing the 15-request frontend polling loop.
+    Returns all tab counts, WebSocket status, and Zerodha authentication status in one fast response.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+
+        counts = {}
+        seen_triggered_symbols = set()
+
+        for tf in ["monthly", "weekly", "daily", "manual", "darvas"]:
+            try:
+                col = dm.db[tf]
+                counts[tf] = col.count_documents({})
+                if tf in ("monthly", "weekly", "daily", "manual"):
+                    triggered_docs = col.find(
+                        {"$or": [{"alert_count": {"$gt": 0}}, {"alert_status": {"$regex": "TRIGGER", "$options": "i"}}]},
+                        {"symbol": 1}
+                    )
+                    for d in triggered_docs:
+                        s = (d.get("symbol") or "").upper()
+                        if s:
+                            seen_triggered_symbols.add(s)
+            except Exception:
+                counts[tf] = 0
+
+        try:
+            counts["morning_short"] = dm.db["short_candidates"].count_documents({})
+        except Exception:
+            counts["morning_short"] = 0
+
+        try:
+            counts["evening_pro"] = dm.db["evening_pro_candidates"].count_documents({})
+        except Exception:
+            counts["evening_pro"] = 0
+
+        # Zerodha status (cached 30s)
+        z_info = {"configured": False, "status": "no_credentials"}
+        try:
+            z_info = get_zerodha_status(force=False)
+        except Exception:
+            pass
+
+        # Active GTTs count (only query Zerodha GTT API if token is currently valid)
+        gtt_total = len(seen_triggered_symbols)
+        if z_info.get("status") == "valid":
+            try:
+                gtt_res = get_zerodha_gtt_alerts()
+                for g in gtt_res.get("gtts", []):
+                    sym = (g.get("symbol") or "").upper()
+                    if sym and sym not in seen_triggered_symbols:
+                        gtt_total += 1
+                    elif not sym:
+                        gtt_total += 1
+            except Exception:
+                pass
+        counts["active_gtts"] = gtt_total
+
+        # Fast Race counts using cached returns (without triggering blocking network calls if cache is cold)
+        try:
+            todays_race = get_daily_stock_alert_race(today_only=True)
+            counts["todays_race"] = todays_race.get("count", 0)
+        except Exception:
+            counts["todays_race"] = 0
+
+        try:
+            all_race = get_daily_stock_alert_race(today_only=False)
+            counts["race"] = all_race.get("count", 0)
+        except Exception:
+            counts["race"] = 0
+
+        # WebSocket status
+        ws_info = {"running": False, "monitored_tokens_count": 0}
+        try:
+            ws_info = get_websocket_status()
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "counts": counts,
+            "websocket": ws_info,
+            "zerodha": z_info
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute dashboard summary: {e}")
+
 @app.get("/api/chart/{ticker}")
 def get_chart_data(
     ticker: str,
@@ -964,27 +1166,21 @@ def get_chart_data(
         tf_lower = interval.strip().lower()
         if tf_lower in ("10m", "10min", "10minute"):
             zerodha_interval = "10minute"
-            yf_interval = "15m"
             default_days = 30
         elif tf_lower in ("1h", "60m", "60min", "60minute", "hour"):
             zerodha_interval = "60minute"
-            yf_interval = "1h"
             default_days = 90
         elif tf_lower in ("1d", "day", "daily"):
             zerodha_interval = "day"
-            yf_interval = "1d"
             default_days = 365
         elif tf_lower in ("1w", "week", "weekly"):
             zerodha_interval = "week"
-            yf_interval = "1wk"
             default_days = 730
         elif tf_lower in ("1m", "month", "monthly"):
             zerodha_interval = "month"
-            yf_interval = "1mo"
             default_days = 1825
         else:
             zerodha_interval = "10minute"
-            yf_interval = "15m"
             default_days = 30
 
         if days is None:
@@ -1000,46 +1196,18 @@ def get_chart_data(
                 end_dt = datetime.datetime.now()
             start_date = (end_dt - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
 
-        
-        # Fetch from Zerodha or fallback to yfinance
+        # Fetch from Zerodha API (Kite Connect)
         df = pd.DataFrame()
-        zerodha_configured = False
         try:
             from tradingagents.dataflows.zerodha import get_zerodha_credentials
             creds = get_zerodha_credentials()
             if creds.get("api_key") and (creds.get("access_token") or creds.get("request_token")):
-                zerodha_configured = True
-        except Exception:
-            pass
-
-        if zerodha_configured:
-            try:
-                # Fetch chart data from Zerodha with requested interval
                 df = get_zerodha_stock_df(ticker.upper(), start_date, end_date, interval=zerodha_interval)
-            except Exception as e:
-                print(f"[WARNING] Failed to fetch {zerodha_interval} chart data from Zerodha: {e}. Falling back to yfinance.")
+        except Exception as e:
+            print(f"[WARNING] Failed to fetch {zerodha_interval} chart data from Zerodha: {e}")
 
         if df.empty:
-            import yfinance as yf
-            from tradingagents.dataflows.symbol_utils import normalize_symbol
-            from tradingagents.dataflows.stockstats_utils import yf_retry
-            canonical = normalize_symbol(ticker)
-            ticker_obj = yf.Ticker(canonical)
-            hist = yf_retry(lambda: ticker_obj.history(start=start_date, end=end_date, interval=yf_interval))
-            if not hist.empty:
-                hist = hist.reset_index()
-                # Find date/datetime column
-                date_col = None
-                for candidate in ("Datetime", "Date", "index", "date"):
-                    if candidate in hist.columns:
-                        date_col = candidate
-                        break
-                if date_col:
-                    hist = hist.rename(columns={date_col: "Date"})
-                df = hist[["Date", "Open", "High", "Low", "Close", "Volume"]]
-
-        if df.empty:
-            raise HTTPException(status_code=404, detail="No data found")
+            raise HTTPException(status_code=404, detail="No data found from Zerodha API. Ensure Zerodha connection is active.")
             
         # Format for analyze_market_data
         df = df.rename(columns={"Date": "timestamp"})
@@ -1961,6 +2129,6 @@ def send_telegram_chart_alert_endpoint(req: TelegramAlertRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=False)
 
 

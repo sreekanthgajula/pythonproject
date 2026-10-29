@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -49,6 +49,83 @@ export default function App() {
   const [manualReason, setManualReason] = useState('');
   const [addingManualStock, setAddingManualStock] = useState(false);
   const [manualError, setManualError] = useState('');
+
+  // Multi-Agent LangGraph SSE Debate Drawer State (Book Ch. 3 & Ch. 8)
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+  const [agentTargetSymbol, setAgentTargetSymbol] = useState('');
+  const [agentStreamSteps, setAgentStreamSteps] = useState([]);
+  const [agentActiveTool, setAgentActiveTool] = useState('');
+  const [agentStreamStatus, setAgentStreamStatus] = useState('idle'); // 'idle' | 'running' | 'completed' | 'error' | 'cancelled'
+  const [agentFinalDecision, setAgentFinalDecision] = useState({ signal: '', text: '' });
+  const [agentErrorMsg, setAgentErrorMsg] = useState('');
+  const agentEventSourceRef = useRef(null);
+
+  const handleOpenAgentDebate = (symbol) => {
+    if (agentEventSourceRef.current) {
+      agentEventSourceRef.current.close();
+      agentEventSourceRef.current = null;
+    }
+    const cleanSym = (symbol || '').trim().toUpperCase();
+    setAgentTargetSymbol(cleanSym);
+    setAgentStreamSteps([]);
+    setAgentActiveTool('Initializing 12-Agent Graph...');
+    setAgentStreamStatus('running');
+    setAgentFinalDecision({ signal: '', text: '' });
+    setAgentErrorMsg('');
+    setAgentDrawerOpen(true);
+
+    const es = new EventSource(`${API_BASE_URL}/analyze/stream/${encodeURIComponent(cleanSym)}`);
+    agentEventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'start') {
+          setAgentActiveTool(data.message || `Running Analysts for ${cleanSym}...`);
+        } else if (data.type === 'tool') {
+          setAgentActiveTool(`Executing node: ${data.node}...`);
+        } else if (data.type === 'step') {
+          setAgentActiveTool(`Completed: ${data.node}`);
+          setAgentStreamSteps(prev => [...prev, data]);
+        } else if (data.type === 'complete') {
+          setAgentActiveTool('');
+          setAgentFinalDecision({
+            signal: data.signal || 'COMPLETED',
+            text: data.final_trade_decision || ''
+          });
+          setAgentStreamStatus('completed');
+          es.close();
+          agentEventSourceRef.current = null;
+        } else if (data.type === 'error') {
+          setAgentActiveTool('');
+          setAgentErrorMsg(data.message || 'Multi-agent execution encountered an error.');
+          setAgentStreamStatus('error');
+          es.close();
+          agentEventSourceRef.current = null;
+        }
+      } catch (err) {
+        console.error('Error parsing SSE event:', err);
+      }
+    };
+
+    es.onerror = () => {
+      if (agentEventSourceRef.current) {
+        agentEventSourceRef.current.close();
+        agentEventSourceRef.current = null;
+      }
+      setAgentStreamStatus(prev => (prev === 'running' ? 'error' : prev));
+      setAgentErrorMsg(prev => prev || 'Stream connection closed or LLM provider credentials not configured.');
+    };
+  };
+
+  const handleStopAgentDebate = () => {
+    if (agentEventSourceRef.current) {
+      agentEventSourceRef.current.close();
+      agentEventSourceRef.current = null;
+    }
+    setAgentActiveTool('');
+    setAgentStreamStatus(prev => (prev === 'running' ? 'cancelled' : prev));
+  };
 
   const handleScanDarvas = async () => {
     setScanningDarvas(true);
@@ -257,108 +334,35 @@ export default function App() {
     }
   };
 
-  // Fetch counts for all timeframes for tab badges
+  // Fetch counts for all timeframes, WebSocket status, and Zerodha status in a single aggregated call
   const fetchAllTabCounts = async () => {
-    const newCounts = {};
-
-    for (const tf of ['monthly', 'weekly', 'daily', 'manual', 'darvas']) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/ratings/${tf}`);
-        if (res.ok) {
-          const json = await res.json();
-          newCounts[tf] = json.count || 0;
-        }
-      } catch (err) {
-        console.error(`Error fetching tab count for ${tf}:`, err);
-      }
-    }
-
     try {
-      const gttRes = await fetch(`${API_BASE_URL}/zerodha/gtts`);
-      let gttCount = 0;
-      const seenSymbols = new Set();
-      if (gttRes.ok) {
-        const json = await gttRes.json();
-        const allGtts = json.gtts || [];
-        gttCount += allGtts.length;
-        for (const g of allGtts) {
-          if (g.symbol) seenSymbols.add(g.symbol.toUpperCase());
-        }
-      }
-
-      for (const tf of ['monthly', 'weekly', 'daily', 'manual']) {
-        try {
-          const dbRes = await fetch(`${API_BASE_URL}/ratings/${tf}`);
-          if (dbRes.ok) {
-            const json = await dbRes.json();
-            const dbItems = json.data || [];
-            const triggeredInTf = dbItems.filter(i => (i.alert_count && i.alert_count > 0) || (i.alert_status && i.alert_status.toUpperCase().includes('TRIGGER')));
-            for (const item of triggeredInTf) {
-              const symUpper = (item.symbol || '').toUpperCase();
-              if (symUpper && !seenSymbols.has(symUpper)) {
-                seenSymbols.add(symUpper);
-                gttCount += 1;
-              }
+      const res = await fetch(`${API_BASE_URL}/dashboard/summary`);
+      if (res.ok) {
+        const json = await res.json();
+        const newCounts = json.counts || {};
+        setTabCounts(prev => {
+          let changed = false;
+          for (const k of Object.keys(newCounts)) {
+            if (prev[k] !== newCounts[k]) {
+              changed = true;
+              break;
             }
           }
-        } catch (e) {}
-      }
-
-      newCounts.active_gtts = gttCount;
-    } catch (err) {
-      console.error('Error fetching GTT count:', err);
-    }
-
-    try {
-      const todaysRaceRes = await fetch(`${API_BASE_URL}/race/daily?today_only=true`);
-      if (todaysRaceRes.ok) {
-        const json = await todaysRaceRes.json();
-        newCounts.todays_race = json.count || 0;
-      }
-    } catch (err) {
-      console.error('Error fetching todays_race tab count:', err);
-    }
-
-    try {
-      const pastWeekRaceRes = await fetch(`${API_BASE_URL}/race/daily?past_week_only=true`);
-      if (pastWeekRaceRes.ok) {
-        const json = await pastWeekRaceRes.json();
-        newCounts.past_week_race = json.count || 0;
-      }
-    } catch (err) {
-      console.error('Error fetching past_week_race tab count:', err);
-    }
-
-    try {
-      const raceRes = await fetch(`${API_BASE_URL}/race/daily?today_only=false`);
-      if (raceRes.ok) {
-        const json = await raceRes.json();
-        newCounts.race = json.count || 0;
-      }
-    } catch (err) {
-      console.error('Error fetching race tab count:', err);
-    }
-
-    try {
-      const shortRes = await fetch(`${API_BASE_URL}/short-candidates`);
-      if (shortRes.ok) {
-        const json = await shortRes.json();
-        newCounts.morning_short = json.count || 0;
-      }
-    } catch (err) {
-      console.error('Error fetching morning_short tab count:', err);
-    }
-
-    setTabCounts(prev => {
-      let changed = false;
-      for (const k of Object.keys(newCounts)) {
-        if (prev[k] !== newCounts[k]) {
-          changed = true;
-          break;
+          return changed ? { ...prev, ...newCounts } : prev;
+        });
+        if (json.websocket) {
+          setWsStatus(json.websocket);
         }
+        if (json.zerodha) {
+          const isConnected = json.zerodha.status === 'valid';
+          setZerodhaStatus({ ...json.zerodha, connected: isConnected });
+        }
+        return;
       }
-      return changed ? { ...prev, ...newCounts } : prev;
-    });
+    } catch (err) {
+      console.error('Error fetching aggregated dashboard summary:', err);
+    }
   };
 
   // Fetch WebSocket live status
@@ -445,16 +449,12 @@ export default function App() {
     }
     fetchTimeframeRatings(activeTab);
     fetchAllTabCounts();
-    fetchWsStatus();
-    fetchZerodhaStatus();
     fetchDerivativesAnalysis();
 
-    // Fast status auto refresh every 10 seconds
+    // Fast status auto refresh every 10 seconds (2 calls instead of 17)
     const intervalId = setInterval(() => {
       fetchTimeframeRatings(activeTab, true);
       fetchAllTabCounts();
-      fetchWsStatus();
-      fetchZerodhaStatus();
     }, 10000);
 
     // Derivatives OI & Speedometer auto refresh every 5 minutes (300,000 ms) - Low Server Pressure
@@ -1607,9 +1607,23 @@ export default function App() {
                           {formatDate(item.updated_at)}
                         </td>
 
-                        {/* Actions Column: GTT Alert Reset & Delete */}
+                        {/* Actions Column: Multi-Agent Debate, GTT Alert Reset & Delete */}
                         <td style={{ textAlign: 'center' }}>
                           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <button
+                              className="btn-action-gtt"
+                              onClick={() => handleOpenAgentDebate(item.symbol)}
+                              style={{
+                                background: 'rgba(139, 92, 246, 0.2)',
+                                borderColor: 'rgba(139, 92, 246, 0.5)',
+                                color: '#c4b5fd'
+                              }}
+                              title={`Run 12-Agent LangGraph Debate (Market, News, Sentiment, Fundamentals, Bull vs Bear & Risk Committee) for ${item.symbol}`}
+                            >
+                              <Sparkles size={13} />
+                              <span>Agents</span>
+                            </button>
+
                             <button
                               className="btn-action-gtt"
                               onClick={() => handleResetSingleGtt(item.symbol)}
@@ -1711,6 +1725,208 @@ export default function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 12-Agent LangGraph Live Debate Slide-Over Drawer (Book Ch. 3 Observability/Interruptibility & Ch. 8 SSE) */}
+      {agentDrawerOpen && (
+        <div
+          className="modal-backdrop"
+          style={{ justifyContent: 'flex-end', alignItems: 'stretch', padding: 0 }}
+          onClick={() => {
+            handleStopAgentDebate();
+            setAgentDrawerOpen(false);
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 'min(680px, 95vw)',
+              height: '100vh',
+              background: '#0f172a',
+              borderLeft: '1px solid rgba(148, 163, 184, 0.2)',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '-12px 0 36px rgba(0, 0, 0, 0.65)'
+            }}
+          >
+            {/* Drawer Header */}
+            <div
+              style={{
+                padding: '1.1rem 1.4rem',
+                borderBottom: '1px solid rgba(148, 163, 184, 0.15)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                background: 'rgba(30, 41, 59, 0.7)'
+              }}
+            >
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <Sparkles size={18} color="#a78bfa" />
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', color: '#f8fafc' }}>
+                    12-Agent LangGraph Debate: <span style={{ color: '#38bdf8' }}>{agentTargetSymbol}</span>
+                  </h3>
+                  <span
+                    style={{
+                      fontSize: '0.72rem',
+                      padding: '2px 8px',
+                      borderRadius: '999px',
+                      fontWeight: 700,
+                      background:
+                        agentStreamStatus === 'running'
+                          ? 'rgba(59, 130, 246, 0.2)'
+                          : agentStreamStatus === 'completed'
+                          ? 'rgba(16, 185, 129, 0.2)'
+                          : 'rgba(244, 63, 94, 0.2)',
+                      color:
+                        agentStreamStatus === 'running'
+                          ? '#60a5fa'
+                          : agentStreamStatus === 'completed'
+                          ? '#34d399'
+                          : '#fb7185'
+                    }}
+                  >
+                    {agentStreamStatus.toUpperCase()}
+                  </span>
+                </div>
+                <p style={{ margin: '0.25rem 0 0', fontSize: '0.78rem', color: '#94a3b8' }}>
+                  Analysts (Market, Social, News, Fundamentals) → Bull vs. Bear Debate → Risk Committee → Portfolio Manager
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {agentStreamStatus === 'running' && (
+                  <button
+                    onClick={handleStopAgentDebate}
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      border: '1px solid rgba(239, 68, 68, 0.5)',
+                      color: '#fca5a5',
+                      borderRadius: '6px',
+                      padding: '5px 10px',
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                    title="Interrupt / Stop Multi-Agent Execution"
+                  >
+                    ⏹ Stop Stream
+                  </button>
+                )}
+                <button
+                  className="modal-close-btn"
+                  onClick={() => {
+                    handleStopAgentDebate();
+                    setAgentDrawerOpen(false);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {/* Live Progress Bar */}
+            {agentStreamStatus === 'running' && (
+              <div
+                style={{
+                  padding: '0.65rem 1.4rem',
+                  background: 'rgba(59, 130, 246, 0.1)',
+                  borderBottom: '1px solid rgba(59, 130, 246, 0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.6rem',
+                  fontSize: '0.82rem',
+                  color: '#93c5fd'
+                }}
+              >
+                <div className="loading-spinner" style={{ width: '14px', height: '14px' }}></div>
+                <span>{agentActiveTool || 'Streaming multi-agent reasoning over SSE...'}</span>
+              </div>
+            )}
+
+            {/* Final Verdict Banner */}
+            {agentFinalDecision.signal && (
+              <div
+                style={{
+                  margin: '1rem 1.4rem 0',
+                  padding: '0.9rem 1.1rem',
+                  borderRadius: '8px',
+                  background: 'rgba(16, 185, 129, 0.15)',
+                  border: '1px solid rgba(16, 185, 129, 0.4)',
+                  color: '#ecfdf5'
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '0.95rem', color: '#34d399', marginBottom: '0.25rem' }}>
+                  🏆 Final Portfolio Manager Signal: {agentFinalDecision.signal}
+                </div>
+                {agentFinalDecision.text && (
+                  <div style={{ fontSize: '0.82rem', whiteSpace: 'pre-wrap', lineHeight: 1.45, maxHeight: '160px', overflowY: 'auto' }}>
+                    {agentFinalDecision.text}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Error Notice */}
+            {agentErrorMsg && (
+              <div
+                style={{
+                  margin: '1rem 1.4rem 0',
+                  padding: '0.85rem 1rem',
+                  borderRadius: '8px',
+                  background: 'rgba(244, 63, 94, 0.15)',
+                  border: '1px solid rgba(244, 63, 94, 0.4)',
+                  color: '#fecdd3',
+                  fontSize: '0.83rem'
+                }}
+              >
+                <strong>⚠️ Stream Notice:</strong> {agentErrorMsg}
+              </div>
+            )}
+
+            {/* Streamed Agent Cards */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '1rem 1.4rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              {agentStreamSteps.length === 0 && agentStreamStatus === 'running' && (
+                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#64748b' }}>
+                  <p style={{ margin: 0, fontSize: '0.9rem' }}>
+                    Waiting for first analyst node (Market Analyst) to finish tool execution...
+                  </p>
+                </div>
+              )}
+
+              {agentStreamSteps.map((step, idx) => (
+                <div
+                  key={`${step.node}-${idx}`}
+                  style={{
+                    background: 'rgba(30, 41, 59, 0.75)',
+                    border: '1px solid rgba(148, 163, 184, 0.18)',
+                    borderRadius: '8px',
+                    padding: '0.85rem 1rem'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.45rem' }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.88rem', color: '#c4b5fd' }}>
+                      🤖 {step.node}
+                    </span>
+                    <span style={{ fontSize: '0.73rem', color: '#64748b' }}>{step.timestamp}</span>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '0.82rem',
+                      color: '#e2e8f0',
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: 1.45,
+                      maxHeight: '260px',
+                      overflowY: 'auto'
+                    }}
+                  >
+                    {step.report}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

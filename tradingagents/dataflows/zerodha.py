@@ -93,16 +93,31 @@ def _get_instruments_df() -> pd.DataFrame:
 
 
 def get_instrument_token(symbol: str) -> int:
-    """Map a ticker symbol (e.g. INFY.NS or INFY) to its Zerodha instrument token."""
-    symbol = symbol.upper()
+    """Map a ticker symbol (e.g. INFY.NS, INFY, ^NSEI, NIFTY 50) to its Zerodha instrument token."""
+    symbol = symbol.strip().upper()
     exchange = "NSE"
     tradingsymbol = symbol
 
-    if symbol.endswith(".NS"):
+    index_aliases = {
+        "^NSEI": ("NSE", "NIFTY 50"),
+        "NIFTY": ("NSE", "NIFTY 50"),
+        "NIFTY50": ("NSE", "NIFTY 50"),
+        "NIFTY 50": ("NSE", "NIFTY 50"),
+        "^NSEBANK": ("NSE", "NIFTY BANK"),
+        "BANKNIFTY": ("NSE", "NIFTY BANK"),
+        "^BSESN": ("BSE", "SENSEX"),
+        "SENSEX": ("BSE", "SENSEX"),
+    }
+    if symbol in index_aliases:
+        exchange, tradingsymbol = index_aliases[symbol]
+    elif symbol.endswith(".NS"):
         exchange = "NSE"
         tradingsymbol = symbol[:-3]
     elif symbol.endswith(".BO"):
         exchange = "BSE"
+        tradingsymbol = symbol[:-3]
+    elif symbol.endswith("-EQ"):
+        exchange = "NSE"
         tradingsymbol = symbol[:-3]
 
     df = _get_instruments_df()
