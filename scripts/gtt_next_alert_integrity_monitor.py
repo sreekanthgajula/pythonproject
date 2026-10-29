@@ -70,8 +70,26 @@ def audit_and_restore_next_gtt_alerts(dry_run: bool = False) -> dict:
             logger.info(f"[GTT INTEGRITY MONITOR] Fetched {len(raw_gtts)} live GTT orders from Zerodha for {len(live_gtts_map)} symbols.")
         except Exception as k_err:
             logger.warning(f"[GTT INTEGRITY MONITOR] Could not fetch live Zerodha GTTs: {k_err}")
+            if "api_key" in str(k_err) or "access_token" in str(k_err) or "TokenException" in type(k_err).__name__:
+                logger.info("[GTT INTEGRITY MONITOR] Skipping GTT auto-restore loop until Zerodha TOTP login is completed.")
+                return {
+                    "status": "zerodha_disconnected",
+                    "total_tracked": 0,
+                    "active_next_alerts_count": 0,
+                    "restored_count": 0,
+                    "failed_count": 0,
+                    "restored_stocks": []
+                }
     else:
-        logger.warning("[GTT INTEGRITY MONITOR] Zerodha KiteConnect client unavailable. Audit running in local database verification mode.")
+        logger.warning("[GTT INTEGRITY MONITOR] Zerodha KiteConnect client unavailable. Skipping live GTT restore until authenticated.")
+        return {
+            "status": "zerodha_disconnected",
+            "total_tracked": 0,
+            "active_next_alerts_count": 0,
+            "restored_count": 0,
+            "failed_count": 0,
+            "restored_stocks": []
+        }
 
     total_tracked = 0
     active_count = 0

@@ -400,7 +400,24 @@ class ZerodhaWebSocketAlertEngine:
             return
 
         self.load_monitored_targets()
-        
+
+        # Refresh latest credentials from env
+        creds = get_zerodha_credentials()
+        self.api_key = creds.get("api_key") or os.getenv("ZERODHA_API_KEY") or self.api_key
+        self.access_token = os.getenv("ZERODHA_ACCESS_TOKEN") or creds.get("access_token") or self.access_token
+        api_url = creds.get("api_url", "https://api.kite.trade")
+
+        if not self.mock_mode:
+            from tradingagents.dataflows.zerodha import is_token_valid
+            if not (self.api_key and self.access_token and is_token_valid(self.api_key, self.access_token, api_url)):
+                logger.warning(
+                    "Zerodha access token is currently expired/invalid. Loaded %d monitored targets in standby; "
+                    "KiteTicker WebSocket will connect automatically once authenticated via TOTP.",
+                    len(self.token_map)
+                )
+                self.is_running = False
+                return
+
         if self.mock_mode:
             logger.info("[MOCK MODE] Initializing MockKiteTicker WebSocket client.")
 

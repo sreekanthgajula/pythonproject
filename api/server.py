@@ -54,46 +54,76 @@ _stock_returns_cache = {
 
 def _get_stock_returns_cached(stock_symbols: list) -> dict:
     now = time.time()
-    if now - _stock_returns_cache["timestamp"] < 600 and _stock_returns_cache["data"]:
+    if now - _stock_returns_cache["timestamp"] < 60 and _stock_returns_cache["data"]:
         return _stock_returns_cache["data"]
 
     returns_map = {}
     if not stock_symbols:
         return returns_map
 
+    clean_syms = sorted(list({s.upper().replace(".NS", "").replace("-EQ", "") for s in stock_symbols if s}))
+
     try:
-        from tradingagents.dataflows.zerodha import get_zerodha_credentials, is_token_valid
-        creds = get_zerodha_credentials()
-        api_key = creds.get("api_key")
-        access_token = creds.get("access_token")
-        api_url = creds.get("api_url", "https://api.kite.trade")
+        from data_manager import DataManager
+        dm = DataManager()
+        cached_docs = list(dm.db["stock_returns_cache"].find({"symbol": {"$in": clean_syms}}, {"_id": 0}))
+        for doc in cached_docs:
+            sym = doc.get("symbol")
+            if sym:
+                returns_map[sym] = {
+                    "daily_change_pct": float(doc.get("daily_change_pct") or 0.0),
+                    "weekly_change_pct": float(doc.get("weekly_change_pct") or 0.0),
+                    "monthly_change_pct": float(doc.get("monthly_change_pct") or 0.0),
+                    "ltp": float(doc.get("ltp") or 0.0),
+                    "prev_close": float(doc.get("prev_close") or 0.0),
+                    "week_ago_close": float(doc.get("week_ago_close") or 0.0),
+                    "month_ago_close": float(doc.get("month_ago_close") or 0.0),
+                }
 
-        if api_key and access_token and is_token_valid(api_key, access_token, api_url):
-            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.datetime.now() - datetime.timedelta(days=35)).strftime("%Y-%m-%d")
-            for sym in stock_symbols:
-                if not sym:
-                    continue
+        # Refresh live LTP from Zerodha batch /quote endpoint (<0.3s for all symbols)
+        status_info = get_zerodha_status(force=False)
+        if status_info.get("status") == "valid":
+            from tradingagents.dataflows.zerodha import get_zerodha_credentials
+            creds = get_zerodha_credentials()
+            api_key = creds.get("api_key")
+            access_token = creds.get("access_token")
+            api_url = creds.get("api_url", "https://api.kite.trade")
+            headers = {
+                "X-Kite-Version": "3",
+                "Authorization": f"token {api_key}:{access_token}"
+            }
+            for i in range(0, len(clean_syms), 200):
+                batch = clean_syms[i:i + 200]
                 try:
-                    df = get_zerodha_stock_df(sym.upper(), start_date, end_date, interval="day")
-                    if not df.empty and "Close" in df.columns and len(df) >= 2:
-                        s_series = df["Close"].dropna()
-                        p_latest = float(s_series.iloc[-1])
-                        p_prev_day = float(s_series.iloc[-2])
-                        p_week_ago = float(s_series.iloc[-6]) if len(s_series) >= 6 else float(s_series.iloc[0])
-                        p_month_ago = float(s_series.iloc[0])
-
-                        daily_pct = round(((p_latest - p_prev_day) / p_prev_day) * 100.0, 2) if p_prev_day > 0 else 0.0
-                        weekly_pct = round(((p_latest - p_week_ago) / p_week_ago) * 100.0, 2) if p_week_ago > 0 else 0.0
-                        monthly_pct = round(((p_latest - p_month_ago) / p_month_ago) * 100.0, 2) if p_month_ago > 0 else 0.0
-
-                        returns_map[sym] = {
-                            "daily_change_pct": daily_pct,
-                            "weekly_change_pct": weekly_pct,
-                            "monthly_change_pct": monthly_pct
-                        }
+                    resp = requests.get(
+                        f"{api_url}/quote",
+                        params=[("i", f"NSE:{s}") for s in batch],
+                        headers=headers,
+                        timeout=6
+                    )
+                    if resp.status_code == 200:
+                        quotes = resp.json().get("data", {})
+                        for s in batch:
+                            q = quotes.get(f"NSE:{s}") or {}
+                            ltp = float(q.get("last_price") or 0.0)
+                            q_prev = float((q.get("ohlc") or {}).get("close") or 0.0)
+                            if ltp > 0:
+                                base = returns_map.get(s, {})
+                                prev_c = q_prev if (q_prev > 0 and q_prev != ltp) else float(base.get("prev_close") or q_prev or 0.0)
+                                wk_c = float(base.get("week_ago_close") or 0.0)
+                                mo_c = float(base.get("month_ago_close") or 0.0)
+                                daily_pct = round(((ltp - prev_c) / prev_c) * 100.0, 2) if prev_c > 0 else float(base.get("daily_change_pct") or 0.0)
+                                weekly_pct = round(((ltp - wk_c) / wk_c) * 100.0, 2) if wk_c > 0 else float(base.get("weekly_change_pct") or 0.0)
+                                monthly_pct = round(((ltp - mo_c) / mo_c) * 100.0, 2) if mo_c > 0 else float(base.get("monthly_change_pct") or 0.0)
+                                returns_map[s] = {
+                                    "daily_change_pct": daily_pct,
+                                    "weekly_change_pct": weekly_pct,
+                                    "monthly_change_pct": monthly_pct,
+                                    "ltp": ltp
+                                }
                 except Exception:
                     continue
+
         if returns_map:
             _stock_returns_cache["timestamp"] = now
             _stock_returns_cache["data"] = returns_map
@@ -231,6 +261,9 @@ def monitor_watchlist():
             # Check every 60 seconds
             time.sleep(60)
             
+            if get_zerodha_status(force=False).get("status") != "valid":
+                continue
+
             tickers_to_check = list(watchlist)
             if not tickers_to_check:
                 continue
@@ -386,12 +419,16 @@ def run_gtt_audit_loop():
     time.sleep(5)
     while True:
         try:
-            print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Executing GTT next alert integrity audit & recovery...")
-            from scripts.gtt_next_alert_integrity_monitor import audit_and_restore_next_gtt_alerts
-            res = audit_and_restore_next_gtt_alerts(dry_run=False)
-            restored = res.get("restored_count", 0)
-            active = res.get("active_next_alerts_count", 0)
-            print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Audit completed. Active next alerts: {active}, Restored missing alerts: {restored}")
+            z_stat = get_zerodha_status(force=False)
+            if z_stat.get("status") == "valid":
+                print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Executing GTT next alert integrity audit & recovery...")
+                from scripts.gtt_next_alert_integrity_monitor import audit_and_restore_next_gtt_alerts
+                res = audit_and_restore_next_gtt_alerts(dry_run=False)
+                restored = res.get("restored_count", 0)
+                active = res.get("active_next_alerts_count", 0)
+                print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Audit completed. Active next alerts: {active}, Restored missing alerts: {restored}")
+            else:
+                print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Skipping GTT audit while Zerodha token is {z_stat.get('status')} (will auto-run upon TOTP login).")
         except Exception as err:
             print(f"[{datetime.datetime.now()}] [GTT-AUDIT-LOOP] Error running GTT integrity audit: {err}")
         # Run every 30 minutes (1800 seconds)
@@ -837,6 +874,15 @@ def post_zerodha_login(req: TotpRequest):
         # Invalidate status cache so frontend sees active connection immediately
         _zerodha_status_cache["timestamp"] = 0.0
         _zerodha_status_cache["data"] = {"configured": True, "status": "valid"}
+
+        # Automatically start/restart KiteTicker WebSocket with the fresh access token
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_alert_engine.stop()
+            ws_alert_engine.start(threaded=True)
+            print("[ZERODHA-LOGIN] Started KiteTicker WebSocket with new access token.")
+        except Exception as ws_err:
+            print(f"[ZERODHA-LOGIN] Warning: Could not start KiteTicker WebSocket after login: {ws_err}")
 
         # Trigger automatic GTT next alert audit in background
         try:
@@ -1651,6 +1697,7 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
                             "symbol": sym,
                             "timeframe": tf.upper(),
                             "alert_count": active_alerts_count,
+                            "today_alert_count": today_alerts,
                             "total_alerts": alert_cnt,
                             "recent_high": recent_high,
                             "alert_trigger_price": trigger_price,
@@ -1659,62 +1706,60 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
                             "alert_status": alert_status,
                             "gtt_id": gtt_id,
                             "last_updated": str(last_alerted_at) if last_alerted_at else now_ist.isoformat(),
-                            "is_today": is_today
+                            "is_today": is_today,
+                            "has_triggered": has_triggered
                         }
+                    else:
+                        existing = stocks_map[sym]
+                        if alert_cnt > existing.get("total_alerts", 0):
+                            existing["total_alerts"] = alert_cnt
+                            existing["alert_count"] = max(existing.get("alert_count", 0), active_alerts_count)
+                        if today_alerts > existing.get("today_alert_count", 0):
+                            existing["today_alert_count"] = today_alerts
+                            if today_only:
+                                existing["alert_count"] = today_alerts
+                        if rating > existing.get("rating", 0):
+                            existing["rating"] = rating
             except Exception as tf_err:
                 print(f"[RACE API] Error fetching {tf} table: {tf_err}")
 
-        # Compute daily, weekly, and monthly percentage returns for all stocks
+        # Compute real Zerodha daily, weekly, and monthly percentage returns for all stocks
         returns_map = _get_stock_returns_cached(list(stocks_map.keys()))
 
         filtered_items = []
         for sym, item in stocks_map.items():
             ret = returns_map.get(sym, {})
-            daily_gain = ret.get("daily_change_pct", 0.0)
-            weekly_gain = ret.get("weekly_change_pct", 0.0)
-            monthly_gain = ret.get("monthly_change_pct", 0.0)
-
-            # Fallback if yfinance returns 0.0 but breakout trigger price vs recent high shows positive gain
-            rec_h = item.get("recent_high", 0.0)
-            trig_p = item.get("alert_trigger_price", 0.0)
-            trig_gain = round(((rec_h - trig_p) / trig_p * 100.0), 2) if (trig_p > 0 and rec_h > 0) else 0.0
-
-            if daily_gain == 0.0 and trig_gain > 0:
-                daily_gain = trig_gain
-            if weekly_gain == 0.0 and trig_gain > 0:
-                weekly_gain = trig_gain
-            if monthly_gain == 0.0 and trig_gain > 0:
-                monthly_gain = trig_gain
+            daily_gain = float(ret.get("daily_change_pct", 0.0) or 0.0)
+            weekly_gain = float(ret.get("weekly_change_pct", 0.0) or 0.0)
+            monthly_gain = float(ret.get("monthly_change_pct", 0.0) or 0.0)
 
             item["daily_change_pct"] = daily_gain
             item["weekly_change_pct"] = weekly_gain
             item["monthly_change_pct"] = monthly_gain
 
-            # Calculate timeframe's positive percentage change
+            # Select the exact timeframe's percentage change:
+            # - Daily tab (today_only=True): strictly current day % increase (daily_gain > 0)
+            # - Weekly tab (past_week_only=True): strictly past week % increase (weekly_gain > 0)
+            # - Monthly tab (default): strictly past month % increase (monthly_gain > 0)
             if today_only:
                 target_pct = daily_gain
+                item["timeframe"] = "DAILY"
             elif past_week_only:
                 target_pct = weekly_gain
+                item["timeframe"] = "WEEKLY"
             else:
-                tf_name = item.get("timeframe", "").upper()
-                if tf_name == "DAILY":
-                    target_pct = daily_gain
-                elif tf_name == "WEEKLY":
-                    target_pct = weekly_gain
-                elif tf_name == "MONTHLY":
-                    target_pct = monthly_gain
-                else:
-                    target_pct = monthly_gain or weekly_gain or daily_gain
+                target_pct = monthly_gain
+                item["timeframe"] = "MONTHLY"
 
             item["positive_change_pct"] = target_pct
 
-            # Filter out non-positive growth candidates for the race
+            # Strictly include ONLY stocks that increased (> 0%) in the selected period
             if target_pct <= 0:
                 continue
 
             filtered_items.append(item)
 
-        # Sort strictly by positive percentage change descending
+        # Sort strictly by % increase descending
         filtered_items.sort(key=lambda x: (x.get("positive_change_pct", 0), x.get("rating", 0), x.get("recent_high", 0)), reverse=True)
 
         # Assign race ranks

@@ -224,8 +224,12 @@ def get_request_token_via_totp(user_id: str, password: str, api_key: str, twofa_
     request_id = res_data["data"]["request_id"]
     twofa_type = res_data["data"].get("twofa_type", "totp")
     
-    # 2. Prompt user for TOTP if not provided
+    # 2. Never block on interactive stdin unless explicitly requested via ZERODHA_ALLOW_CLI_INPUT=1
     if twofa_pin is None:
+        if os.environ.get("ZERODHA_ALLOW_CLI_INPUT") != "1":
+            raise ZerodhaNotConfiguredError(
+                f"Zerodha {twofa_type} required. Please authenticate using the Web UI (Connect Zerodha) with your 6-digit TOTP/App Code."
+            )
         import sys
         if not sys.stdin or not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
             raise ZerodhaNotConfiguredError(
@@ -373,10 +377,10 @@ def get_access_token() -> str:
         except Exception as e:
             print(f"[WARNING] Request token exchange failed: {e}")
 
-    # 3. Try Auto-Login with Username and Password + TOTP Prompt
+    # 3. Try Auto-Login with Username and Password + TOTP Prompt only if CLI input is explicitly enabled
     user_id = os.environ.get("ZERODHA_USERNAME")
     password = os.environ.get("ZERODHA_PASSWORD")
-    if user_id and password:
+    if user_id and password and os.environ.get("ZERODHA_ALLOW_CLI_INPUT") == "1":
         try:
             request_token = get_request_token_via_totp(user_id, password, creds["api_key"])
             _update_env_file("ZERODHA_REQUEST_TOKEN", request_token)
