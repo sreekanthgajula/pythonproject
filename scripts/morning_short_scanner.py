@@ -46,6 +46,14 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from data_manager import DataManager
+from tradingagents.market_timing import (
+    get_now_ist,
+    get_today_ist,
+    get_ist_date_str,
+    get_ist_time_str,
+    format_alert_dual_timestamp,
+    is_morning_short_window
+)
 from scripts.chart_generator import (
     fetch_5min_candles_zerodha,
     generate_5min_short_chart_buffer,
@@ -865,7 +873,7 @@ def format_short_telegram_alert(candidate: Dict[str, Any]) -> str:
     tsi_sig = candidate.get("tsi_signal", 0.0)
     vol_ratio = candidate.get("volume_surge_ratio", 1.0)
     conditions = candidate.get("conditions_met", [])
-    now_str = datetime.now().strftime("%I:%M %p")
+    time_stamp = format_alert_dual_timestamp(get_now_ist())
 
     cond_bullets = "\n".join([f"   • {c}" for c in conditions[:4]])
     summary_line = f"🗣️ <i>{debate_summary}</i>\n" if debate_summary else ""
@@ -873,7 +881,7 @@ def format_short_telegram_alert(candidate: Dict[str, Any]) -> str:
     msg = (
         f"🚨 <b>MORNING EXHAUSTION SHORT ALERT</b> 🚨\n"
         f"⚡ <b>Setup</b>: <b>{stage_title}</b>\n"
-        f"🏷️ <b>Symbol</b>: <b>#{symbol}</b>  •  🕒 <b>{now_str} IST</b>\n"
+        f"🏷️ <b>Symbol</b>: <b>#{symbol}</b>  •  🕒 <b>{time_stamp}</b>\n"
         f"🤖 <b>Agents Debate Rating:</b> <b>{debate_rating} / 10</b> ({debate_verdict})\n"
         f"{summary_line}\n"
         f"📉 <b>EXECUTION LEVELS (5-MIN SETUP)</b>:\n"
@@ -907,7 +915,7 @@ def send_morning_short_telegram_alert(
     """
     symbol = candidate.get("symbol", "").strip().upper()
     stage = candidate.get("stage") or "SHORT"
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = get_ist_date_str()
     dedup_key = f"{today_str}_{symbol}_{stage}"
 
     if not force and dedup_key in _SENT_ALERTS_TODAY:
@@ -919,7 +927,7 @@ def send_morning_short_telegram_alert(
         hist_col = dm.db["short_alerts_history"]
         existing = hist_col.find_one({"date": today_str, "symbol": symbol, "stage": stage})
         if not force and existing:
-            _SENT_ALERTS_TODAY[dedup_key] = existing.get("timestamp", datetime.now().timestamp())
+            _SENT_ALERTS_TODAY[dedup_key] = existing.get("timestamp", get_now_ist().timestamp())
             logger.info(f"[DEDUP-DB] Alert already recorded in DB today for {symbol} ({stage}). Skipping.")
             return {"status": "skipped", "reason": "Already recorded in MongoDB today", "symbol": symbol, "stage": stage}
     except Exception as db_err:
@@ -951,7 +959,7 @@ def send_morning_short_telegram_alert(
     )
 
     if res.get("sent"):
-        _SENT_ALERTS_TODAY[dedup_key] = datetime.now().timestamp()
+        _SENT_ALERTS_TODAY[dedup_key] = get_now_ist().timestamp()
         try:
             dm = DataManager()
             dm.db["short_alerts_history"].update_one(

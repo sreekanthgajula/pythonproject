@@ -31,6 +31,7 @@ logger = logging.getLogger("sync_stock_returns")
 def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
     from data_manager import DataManager
     from scripts.zerodha_alert_manager import get_kite_client
+    from tradingagents.market_timing import get_now_ist, get_today_ist, get_ist_date_str
 
     dm = DataManager()
     if dm.db is None:
@@ -73,7 +74,7 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
         logger.error(f"Failed to fetch NSE instruments from Zerodha: {e}")
         return {"status": "error", "message": f"Instrument lookup failed: {e}"}
 
-    to_date = datetime.now()
+    to_date = get_now_ist()
     # Fetch 45 days back to safely get >= 25 trading days
     from_date = to_date - timedelta(days=45)
     from_str = from_date.strftime("%Y-%m-%d")
@@ -96,7 +97,7 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
 
     # Check which symbols need historical candle refresh
     # If a symbol was synced today and has valid week/month ago close, we can skip historical fetch unless force=True
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_str = get_ist_date_str()
     existing_cache = {
         d["symbol"]: d for d in dm.db["stock_returns_cache"].find({"symbol": {"$in": clean_symbols}}, {"_id": 0})
     }
@@ -182,7 +183,7 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
             "monthly_change_pct": monthly_pct,
             "date": today_str,
             "updated_at": time.time(),
-            "updated_at_ist": datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S IST")
+            "updated_at_ist": get_now_ist().strftime("%Y-%m-%d %H:%M:%S IST")
         }
 
         dm.db["stock_returns_cache"].update_one({"symbol": sym}, {"$set": doc}, upsert=True)

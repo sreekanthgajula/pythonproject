@@ -6,6 +6,7 @@ from datetime import datetime, date
 from io import StringIO
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.symbol_utils import NoMarketDataError
+from tradingagents.market_timing import get_today_ist, TZ_IST
 
 INSTRUMENTS_URL = "https://api.kite.trade/instruments"
 _instruments_df = None
@@ -54,8 +55,8 @@ def _get_instruments_df() -> pd.DataFrame:
     use_cache = False
     if os.path.exists(cache_file):
         try:
-            mtime = datetime.fromtimestamp(os.path.getmtime(cache_file)).date()
-            if mtime == date.today():
+            mtime = datetime.fromtimestamp(os.path.getmtime(cache_file), tz=TZ_IST).date()
+            if mtime == get_today_ist():
                 use_cache = True
         except Exception:
             pass

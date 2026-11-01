@@ -25,6 +25,16 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.zerodha import get_zerodha_stock_df
+from tradingagents.market_timing import (
+    get_now_ist,
+    get_today_ist,
+    get_ist_date_str,
+    format_dual_timezone_stamp,
+    is_derivatives_breakout_window,
+    is_morning_short_window,
+    is_evening_pro_window,
+    is_market_open,
+)
 from momentum_volume_monitor import analyze_market_data
 
 app = FastAPI(title="TradingAgents API")
@@ -271,8 +281,9 @@ def monitor_watchlist():
             if not tickers_to_check:
                 continue
                 
-            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.datetime.now() - datetime.timedelta(days=15)).strftime("%Y-%m-%d")
+            now_ist = get_now_ist()
+            end_date = now_ist.strftime("%Y-%m-%d")
+            start_date = (now_ist - datetime.timedelta(days=15)).strftime("%Y-%m-%d")
             
             for ticker in tickers_to_check:
                 print(f"[MONITOR] Checking {ticker} for breakouts...")
@@ -440,32 +451,60 @@ def run_gtt_audit_loop():
 
 def run_derivatives_alert_monitor_loop():
     """
-    Background daemon loop running every 180 seconds.
+    Timezone-synchronized Derivatives Alert Monitor loop.
+    Active Window: 09:15 AM - 03:30 PM IST (Mon-Fri)
+    Sydney Window: ~02:45 PM - 09:00 PM AEDT / ~01:45 PM - 08:00 PM AEST
+    Runs every 3 minutes (180s) during regular market hours:
     1. Monitors 5m Spot Nifty Candles and triggers automated Weekly CE/PE Option Buyer Telegram Alerts
-       with ATM strike, option LTP, and 5m candlestick chart.
+       with ATM strike, option LTP, 6-Agent Debate consensus, and 5m candlestick chart.
     2. Fetches live Zerodha options chain data and updates macro PCR / Speedometer analytics.
     """
     time.sleep(15)
+    print("[DERIVATIVES-LOOP] Automated Nifty Derivatives & Option Buyer monitor loop started (IST/Sydney Synchronized).")
+    _last_active_state = None
+    _idle_counter = 0
+
     while True:
-        # 1. Two-Stage Weekly Option Buyer Scanner (Stage 1 Early Breakout & Stage 2 Confirmation)
         try:
-            from scripts.nifty_derivatives_breakout_alert import check_and_trigger_spot_index_breakout
-            res = check_and_trigger_spot_index_breakout()
-            if res.get("alert_sent"):
-                print(f"[DERIVATIVES-LOOP] ⚡ Dispatched {res.get('count', 1)} Two-Stage Option Buyer alert(s) to Telegram!")
-        except Exception as e:
-            print(f"[DERIVATIVES-LOOP] Two-stage option scanner note: {e}")
+            from tradingagents.market_timing import is_derivatives_breakout_window, format_dual_timezone_stamp
+            is_active, status_desc = is_derivatives_breakout_window()
 
-        # 2. Macro Options Chain & Speedometer Sync
-        try:
-            from scripts.fetch_derivatives_data import analyze_nse_derivatives, check_and_trigger_oi_pressure_alert
-            data = analyze_nse_derivatives(force_grok=False, force_refresh=True)
-            if data and data.get("zerodha_connected"):
-                check_and_trigger_oi_pressure_alert(data)
-        except Exception as e:
-            print(f"[DERIVATIVES-LOOP] Background options alert loop note: {e}")
+            if is_active != _last_active_state:
+                _last_active_state = is_active
+                time_str = format_dual_timezone_stamp()
+                if is_active:
+                    print(f"[DERIVATIVES-LOOP] ⚡ NSE Derivatives Session ACTIVATED ({time_str}). Scanning every 3m.")
+                else:
+                    print(f"[DERIVATIVES-LOOP] ⏸️ NSE Derivatives Session IDLE ({status_desc}). Next session: 09:15 AM IST.")
 
-        time.sleep(180)
+            if is_active:
+                # 1. Two-Stage Weekly Option Buyer Scanner (Stage 1 Early Breakout & Stage 2 Confirmation)
+                try:
+                    from scripts.nifty_derivatives_breakout_alert import check_and_trigger_spot_index_breakout
+                    res = check_and_trigger_spot_index_breakout(check_market_window=False)
+                    if res.get("alert_sent"):
+                        print(f"[DERIVATIVES-LOOP] ⚡ Dispatched {res.get('count', 1)} Two-Stage Option Buyer alert(s) to Telegram!")
+                except Exception as e:
+                    print(f"[DERIVATIVES-LOOP] Two-stage option scanner note: {e}")
+
+                # 2. Macro Options Chain & Speedometer Sync
+                try:
+                    from scripts.fetch_derivatives_data import analyze_nse_derivatives, check_and_trigger_oi_pressure_alert
+                    data = analyze_nse_derivatives(force_grok=False, force_refresh=True)
+                    if data and data.get("zerodha_connected"):
+                        check_and_trigger_oi_pressure_alert(data)
+                except Exception as e:
+                    print(f"[DERIVATIVES-LOOP] Background options alert loop note: {e}")
+
+                time.sleep(180)
+            else:
+                _idle_counter += 1
+                if _idle_counter % 30 == 0:
+                    print(f"[DERIVATIVES-LOOP] [STATUS] {status_desc}")
+                time.sleep(60)
+        except Exception as loop_err:
+            print(f"[DERIVATIVES-LOOP] Background monitor note: {loop_err}")
+            time.sleep(60)
 
 
 def run_morning_short_monitor_loop():
@@ -594,8 +633,9 @@ def run_paper_trading_loop():
                     pass
 
             sym_list = list(symbols)[:60]
-            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.datetime.now() - datetime.timedelta(days=35)).strftime("%Y-%m-%d")
+            now_ist = get_now_ist()
+            end_date = now_ist.strftime("%Y-%m-%d")
+            start_date = (now_ist - datetime.timedelta(days=35)).strftime("%Y-%m-%d")
 
             for sym in sym_list:
                 try:
@@ -1040,8 +1080,9 @@ async def stream_multi_agent_analysis(
             daily_df = pd.DataFrame()
             if zerodha_live:
                 try:
-                    end_d = datetime.datetime.now().strftime("%Y-%m-%d")
-                    start_d = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
+                    now_ist = get_now_ist()
+                    end_d = now_ist.strftime("%Y-%m-%d")
+                    start_d = (now_ist - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
                     daily_df = get_zerodha_stock_df(clean_sym, start_d, end_d, interval="day")
                 except Exception:
                     pass
@@ -1154,8 +1195,9 @@ async def stream_multi_agent_analysis(
                     pass
 
                 try:
-                    end_d = datetime.datetime.now().strftime("%Y-%m-%d")
-                    start_d = (datetime.datetime.now() - datetime.timedelta(days=12)).strftime("%Y-%m-%d")
+                    now_ist = get_now_ist()
+                    end_d = now_ist.strftime("%Y-%m-%d")
+                    start_d = (now_ist - datetime.timedelta(days=12)).strftime("%Y-%m-%d")
                     df_10m = fetch_history(clean_sym, start_d, end_d, interval="10minute")
                     if not df_10m.empty and len(df_10m) >= 25:
                         _, proc_df = analyze_market_data(df_10m)
@@ -1449,13 +1491,13 @@ def get_chart_data(
             days = default_days
             
         if not end_date:
-            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            end_date = get_now_ist().strftime("%Y-%m-%d")
             
         if not start_date:
             try:
                 end_dt = datetime.datetime.strptime(end_date[:10], "%Y-%m-%d")
             except Exception:
-                end_dt = datetime.datetime.now()
+                end_dt = get_now_ist()
             start_date = (end_dt - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
 
         # Fetch from Zerodha API (Kite Connect)

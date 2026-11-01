@@ -32,6 +32,14 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 from tradingagents.dataflows.symbol_utils import normalize_symbol
+from tradingagents.market_timing import (
+    get_now_ist,
+    get_today_ist,
+    get_ist_date_str,
+    get_ist_time_str,
+    format_alert_dual_timestamp,
+    is_evening_pro_window,
+)
 from data_manager import DataManager
 
 load_dotenv(dotenv_path=project_root / ".env")
@@ -812,7 +820,7 @@ def fetch_historical_daily_data(symbol: str, period_days: int = 365) -> pd.DataF
 
     try:
         from tradingagents.dataflows.zerodha import get_zerodha_stock_df
-        end_dt = datetime.now()
+        end_dt = get_now_ist()
         start_dt = end_dt - timedelta(days=period_days)
         start_str = start_dt.strftime("%Y-%m-%d")
         end_str = end_dt.strftime("%Y-%m-%d")
@@ -1165,13 +1173,13 @@ def format_evening_pro_telegram_alert(c: dict) -> str:
     close_pct = c.get("close_position_pct", 75.0)
     vol_ratio = c.get("volume_ratio", 1.2)
     shares = c.get("position_size_shares", 1)
-    now_str = datetime.now().strftime("%I:%M %p")
+    time_stamp = format_alert_dual_timestamp(get_now_ist())
     summary_line = f"🗣️ <i>{debate_summary}</i>\n" if debate_summary else ""
 
     msg = (
         f"🚀 <b>SUPERTREND PRO BUYING (BTST) ALERT</b> 🚀\n"
         f"⚡ <b>Playbook</b>: <b>{playbook}</b>\n"
-        f"📌 <b>Symbol</b>: <b>#{sym}</b>  •  🕒 <b>{now_str} IST</b>\n"
+        f"📌 <b>Symbol</b>: <b>#{sym}</b>  •  🕒 <b>{time_stamp}</b>\n"
         f"⭐️ <b>Conviction Score</b>: <b>{score:.1f} / 100</b>\n"
         f"🤖 <b>Agents Debate Rating:</b> <b>{debate_rating} / 10</b> ({debate_verdict})\n"
         f"{summary_line}\n"
@@ -1201,7 +1209,7 @@ def send_evening_pro_telegram_alert(
     Enforces anti-spam: Max 1 alert per symbol per day.
     """
     symbol = candidate.get("symbol", "").strip().upper()
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = get_ist_date_str()
     dedup_key = f"{today_str}_{symbol}_SUPERTREND"
 
     if not force and dedup_key in _SENT_ALERTS_TODAY:
@@ -1213,7 +1221,7 @@ def send_evening_pro_telegram_alert(
         hist_col = dm.db["evening_alerts_history"]
         existing = hist_col.find_one({"date": today_str, "symbol": symbol})
         if not force and existing:
-            _SENT_ALERTS_TODAY[dedup_key] = existing.get("timestamp", datetime.now().timestamp())
+            _SENT_ALERTS_TODAY[dedup_key] = existing.get("timestamp", get_now_ist().timestamp())
             logger.info(f"[DEDUP-DB] Alert already in DB today for {symbol}. Skipping.")
             return {"status": "skipped", "reason": "Already in DB today", "symbol": symbol}
     except Exception as db_err:
@@ -1248,7 +1256,7 @@ def send_evening_pro_telegram_alert(
     )
 
     if res.get("sent"):
-        _SENT_ALERTS_TODAY[dedup_key] = datetime.now().timestamp()
+        _SENT_ALERTS_TODAY[dedup_key] = get_now_ist().timestamp()
         try:
             dm = DataManager()
             dm.db["evening_alerts_history"].update_one(

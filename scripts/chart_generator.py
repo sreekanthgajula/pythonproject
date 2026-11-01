@@ -27,6 +27,8 @@ import numpy as np
 import requests
 from dotenv import load_dotenv
 
+from tradingagents.market_timing import get_now_ist, get_today_ist
+
 # Ensure project root is in sys.path
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
@@ -96,7 +98,7 @@ def get_near_month_future_token(index_name: str, kite: Optional["KiteConnect"] =
     Caches the result for the current day to avoid repeatedly downloading NFO instruments.
     """
     global _FUTURES_TOKEN_CACHE
-    today = datetime.now().date()
+    today = get_today_ist()
     if index_name in _FUTURES_TOKEN_CACHE:
         token, cached_date = _FUTURES_TOKEN_CACHE[index_name]
         if cached_date == today:
@@ -169,7 +171,7 @@ def fetch_5min_candles_zerodha(
         return pd.DataFrame()
 
     try:
-        to_date = datetime.now()
+        to_date = get_now_ist()
         from_date = to_date - timedelta(days=days)
         raw_candles = kite.historical_data(
             instrument_token=token,

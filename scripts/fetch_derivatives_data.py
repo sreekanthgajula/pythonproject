@@ -16,6 +16,13 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 from scripts.zerodha_alert_manager import get_kite_client
+from tradingagents.market_timing import (
+    get_now_ist,
+    get_today_ist,
+    get_ist_date_str,
+    get_ist_time_str,
+    format_alert_dual_timestamp,
+)
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=project_root / ".env")
@@ -64,7 +71,7 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
             df = pd.DataFrame(instruments)
             nifty_opts = df[(df['name'] == 'NIFTY') & (df['segment'] == 'NFO-OPT')].copy()
             
-            today = datetime.date.today()
+            today = get_today_ist()
             expiries = sorted([exp for exp in nifty_opts['expiry'].unique() if exp >= today])
             target_expiry = expiries[0] if expiries else None
             
@@ -351,7 +358,7 @@ Format output strictly as:
                 analysis_output = res.json()["choices"][0]["message"]["content"]
                 used_grok = True
                 grok_cached = False
-                last_updated_time = datetime.datetime.now().strftime("%I:%M %p")
+                last_updated_time = format_alert_dual_timestamp(get_now_ist())
                 _DERIVATIVES_CACHE["grok_output"] = analysis_output
                 _DERIVATIVES_CACHE["last_grok_time"] = last_updated_time
             else:
@@ -623,7 +630,7 @@ def format_telegram_derivatives_alert(derivatives_data: dict) -> str:
     1-10 strength rating (Bull or Bear), explicit Buyer Action, Agents Debate Rating, and conviction.
     """
     rating_data = calculate_derivatives_strength_rating(derivatives_data)
-    timestamp = derivatives_data.get("last_updated_time") or datetime.datetime.now().strftime("%I:%M %p")
+    timestamp = derivatives_data.get("last_updated_time") or format_alert_dual_timestamp(get_now_ist())
     bias_word = "BULLISH" if rating_data["bias"] == "BULL" else "BEARISH" if rating_data["bias"] == "BEAR" else "NEUTRAL"
     action_text = "🚀 ACTION: BUY WEEKLY CE (CALL)" if rating_data["bias"] == "BULL" else "📉 ACTION: BUY WEEKLY PE (PUT)" if rating_data["bias"] == "BEAR" else "⚖️ RANGEBOUND SETUP"
 

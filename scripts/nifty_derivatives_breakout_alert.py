@@ -58,6 +58,16 @@ from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
 import numpy as np
+
+from tradingagents.market_timing import (
+    get_now_ist,
+    get_today_ist,
+    get_ist_date_str,
+    get_ist_time_str,
+    format_alert_dual_timestamp,
+    is_derivatives_breakout_window,
+    is_market_open,
+)
 from dotenv import load_dotenv
 
 project_root = Path(__file__).resolve().parent.parent
@@ -110,8 +120,8 @@ _NFO_INSTRUMENTS_CACHE: Dict[str, Any] = {
 
 
 def get_nfo_instruments_df(kite=None) -> pd.DataFrame:
-    """Fetches and caches the NFO instruments DataFrame for the current day."""
-    today = date.today()
+    """Fetches and caches the NFO instruments DataFrame for the current day (IST synchronized)."""
+    today = get_today_ist()
     if _NFO_INSTRUMENTS_CACHE["date"] == today and _NFO_INSTRUMENTS_CACHE["df"] is not None:
         return _NFO_INSTRUMENTS_CACHE["df"]
 
@@ -154,7 +164,7 @@ def resolve_nifty_near_month_future(kite=None) -> Optional[Dict[str, Any]]:
     if nfo_df.empty:
         return None
 
-    today = date.today()
+    today = get_today_ist()
     futs = nfo_df[
         (nfo_df["name"] == "NIFTY") &
         (nfo_df["instrument_type"] == "FUT") &
@@ -197,7 +207,7 @@ def resolve_atm_straddle_contracts(
     if nfo_df.empty:
         return None
 
-    today = date.today()
+    today = get_today_ist()
     opts = nfo_df[
         (nfo_df["name"] == "NIFTY") &
         (nfo_df["instrument_type"].isin(["CE", "PE"])) &
@@ -245,7 +255,7 @@ def fetch_zerodha_5m_candles_with_oi(
         return pd.DataFrame()
 
     try:
-        to_date = datetime.now()
+        to_date = get_now_ist()
         from_date = to_date - timedelta(days=days)
         raw_candles = kite.historical_data(
             instrument_token=instrument_token,
@@ -1234,7 +1244,7 @@ def format_three_confirmation_telegram_alert(signal_data: Dict[str, Any]) -> str
             f"• Futures OI: <b>{oi_chg:+,} ({oi_chg_pct:+.2f}%)</b> (Short Covering + Writer Floor)"
         )
 
-    now_time = datetime.now().strftime("%I:%M %p")
+    now_time = format_alert_dual_timestamp(get_now_ist())
 
     msg = (
         f"{header_emoji} <b>NIFTY DERIVATIVES: {direction} SIGNAL ({rating}/10) {dir_emoji}</b>\n"
@@ -1402,19 +1412,26 @@ def build_mock_three_confirmation_data(direction: str = "BULLISH") -> Tuple[pd.D
     return fut_df, ce_df, pe_df
 
 
-def check_and_trigger_spot_index_breakout(kite=None) -> Dict[str, Any]:
+def check_and_trigger_spot_index_breakout(kite=None, check_market_window: bool = True) -> Dict[str, Any]:
     """
     Live 5-minute scanner executed by the server background loop:
-      1. Resolves active near-month Nifty Futures from Zerodha NFO.
-      2. Fetches 5m Futures candles with Open Interest (OI).
-      3. Evaluates both the live 5m bar and the just-completed 5m bar (`iloc[:-1]`)
+      1. Respects NSE Indian Market Hours (09:15 AM - 03:30 PM IST / Sydney ~02:45 PM - 09:00 PM AEDT).
+      2. Resolves active near-month Nifty Futures from Zerodha NFO.
+      3. Fetches 5m Futures candles with Open Interest (OI).
+      4. Evaluates both the live 5m bar and the just-completed 5m bar (`iloc[:-1]`)
          across the ATM strikes spanning the candle's Open & Close (`{ATM_open, ATM_close}`)
          so explosive option breakouts (e.g. `NIFTY 22800 CE` when Futures jumps from 22,831 to 22,881)
          are never missed by mid-bar polling or a 50-pt strike shift.
-      4. Requires ALL 3 Confirmations + Mandatory Pre-Alert 6-Agent Debate Gate (>= 7.0/10)
+      5. Requires ALL 3 Confirmations + Mandatory Pre-Alert 6-Agent Debate Gate (>= 7.0/10)
          before dispatching the Telegram alert with the 5m Candlestick + Volume (w/ OBV) + OBV + TSI chart.
     """
     global _ALERT_DEDUP_STATE
+
+    if check_market_window:
+        is_active, status_desc = is_derivatives_breakout_window()
+        if not is_active:
+            return {"alert_sent": False, "count": 0, "reason": f"Market closed: {status_desc}"}
+
     kite = kite or get_kite_client()
     if not kite:
         return {"alert_sent": False, "count": 0, "reason": "Zerodha Kite client not connected"}
@@ -1562,7 +1579,7 @@ def send_nifty_breakout_telegram_alert(
         pe_df=pe_df,
         futures_symbol="NIFTY1!",
         atm_strike=atm,
-        expiry_str=date.today().strftime("%d-%b-%Y")
+        expiry_str=get_today_ist().strftime("%d-%b-%Y")
     )
     if force_send:
         return dispatch_three_confirmation_telegram_alert(eval_res, kite=kite, force_send=True)

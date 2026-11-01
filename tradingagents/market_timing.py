@@ -17,7 +17,7 @@ Indian Market Timings (IST - Asia/Kolkata, UTC+05:30):
 """
 
 import zoneinfo
-from datetime import datetime, time, timezone, timedelta
+from datetime import datetime, date, time, timezone, timedelta
 from typing import Optional, Tuple, Dict, Any
 
 TZ_IST = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -29,6 +29,21 @@ def get_now_ist() -> datetime:
     return datetime.now(TZ_IST)
 
 
+def get_today_ist() -> date:
+    """Returns today's date in Indian Standard Time (IST)."""
+    return datetime.now(TZ_IST).date()
+
+
+def get_ist_date_str(fmt: str = "%Y-%m-%d") -> str:
+    """Returns the current date string in IST."""
+    return datetime.now(TZ_IST).strftime(fmt)
+
+
+def get_ist_time_str(fmt: str = "%I:%M %p") -> str:
+    """Returns the current time string in IST."""
+    return datetime.now(TZ_IST).strftime(fmt)
+
+
 def get_now_sydney() -> datetime:
     """Returns the current timezone-aware datetime in Sydney, Australia (AEST/AEDT)."""
     return datetime.now(TZ_SYDNEY)
@@ -37,7 +52,7 @@ def get_now_sydney() -> datetime:
 def format_dual_timezone_stamp(dt_ist: Optional[datetime] = None) -> str:
     """
     Returns a formatted string showing both IST and Sydney times.
-    Example: 'IST: 09:45 AM | Sydney: 03:15 PM AEDT'
+    Example: 'IST: 09:45 AM (02-Nov-2026) | Sydney: 03:15 PM AEDT (02-Nov-2026)'
     """
     if dt_ist is None:
         dt_ist = get_now_ist()
@@ -46,6 +61,20 @@ def format_dual_timezone_stamp(dt_ist: Optional[datetime] = None) -> str:
         f"IST: {dt_ist.strftime('%I:%M %p')} ({dt_ist.strftime('%d-%b-%Y')}) | "
         f"Sydney: {dt_syd.strftime('%I:%M %p %Z')} ({dt_syd.strftime('%d-%b-%Y')})"
     )
+
+
+def format_alert_dual_timestamp(dt_ist: Optional[datetime] = None) -> str:
+    """
+    Returns a concise dual timestamp ideal for Telegram alerts and UI cards.
+    Example: '09:45 AM IST (03:15 PM Sydney AEDT)'
+    """
+    if dt_ist is None:
+        dt_ist = get_now_ist()
+    elif dt_ist.tzinfo is None:
+        dt_ist = dt_ist.replace(tzinfo=TZ_IST)
+    dt_syd = dt_ist.astimezone(TZ_SYDNEY)
+    syd_tz_name = dt_syd.strftime("%Z")
+    return f"{dt_ist.strftime('%I:%M %p')} IST ({dt_syd.strftime('%I:%M %p')} Sydney {syd_tz_name})"
 
 
 def is_trading_day(dt_ist: Optional[datetime] = None) -> bool:
@@ -69,6 +98,42 @@ def is_market_open(dt_ist: Optional[datetime] = None) -> bool:
 
     t = dt_ist.time()
     return time(9, 15) <= t <= time(15, 30)
+
+
+def is_derivatives_breakout_window(dt_ist: Optional[datetime] = None) -> Tuple[bool, str]:
+    """
+    Checks if current moment is inside the NSE Derivatives trading window (09:15 AM - 03:30 PM IST, Mon-Fri).
+    Sydney: ~02:45 PM - 09:00 PM AEDT / ~01:45 PM - 08:00 PM AEST.
+    """
+    if dt_ist is None:
+        dt_ist = get_now_ist()
+
+    dt_syd = dt_ist.astimezone(TZ_SYDNEY)
+    syd_tz_name = dt_syd.strftime("%Z")
+
+    if not is_trading_day(dt_ist):
+        day_name = dt_ist.strftime("%A")
+        return False, f"Weekend ({day_name}) - Indian stock market closed. Next session on Monday."
+
+    t = dt_ist.time()
+    market_open = time(9, 15)
+    market_close = time(15, 30)
+
+    if market_open <= t <= market_close:
+        return True, (
+            f"Active NSE Derivatives Session (09:15 - 15:30 IST) | "
+            f"Current: {dt_ist.strftime('%I:%M %p')} IST / {dt_syd.strftime('%I:%M %p')} {syd_tz_name}"
+        )
+    elif t < market_open:
+        return False, (
+            f"Pre-Market (Opens at 09:15 AM IST) | "
+            f"Current: {dt_ist.strftime('%I:%M %p')} IST / {dt_syd.strftime('%I:%M %p')} {syd_tz_name}"
+        )
+    else:
+        return False, (
+            f"Market Closed for the day (03:30 PM IST) | "
+            f"Current: {dt_ist.strftime('%I:%M %p')} IST / {dt_syd.strftime('%I:%M %p')} {syd_tz_name}"
+        )
 
 
 def is_morning_short_window(dt_ist: Optional[datetime] = None) -> Tuple[bool, str]:
@@ -164,6 +229,7 @@ def get_market_timing_summary() -> Dict[str, Any]:
 
     m_active, m_status = is_morning_short_window(now_ist)
     e_active, e_status = is_evening_pro_window(now_ist)
+    d_active, d_status = is_derivatives_breakout_window(now_ist)
     trading_day = is_trading_day(now_ist)
     market_open = is_market_open(now_ist)
 
@@ -191,6 +257,13 @@ def get_market_timing_summary() -> Dict[str, Any]:
         },
         "is_trading_day": trading_day,
         "is_market_open": market_open,
+        "derivatives_breakout_scanner": {
+            "is_active_now": d_active,
+            "status_message": d_status,
+            "schedule_ist": "09:15 AM - 03:30 PM IST (Mon-Fri)",
+            "schedule_sydney": f"{m_start_syd.strftime('%I:%M %p')} - {e_end_syd.strftime('%I:%M %p')} {syd_tz_name} (Mon-Fri)",
+            "frequency": "Every 3 minutes during active market window"
+        },
         "morning_short_scanner": {
             "is_active_now": m_active,
             "status_message": m_status,

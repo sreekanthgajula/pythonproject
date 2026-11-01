@@ -36,6 +36,30 @@ export default function App() {
   const [runningPipeline, setRunningPipeline] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [wsStatus, setWsStatus] = useState({ running: false, monitored_tokens_count: 0 });
+  const [liveClock, setLiveClock] = useState({ ist: '', syd: '', isMarketOpen: false });
+
+  useEffect(() => {
+    const updateTimes = () => {
+      const now = new Date();
+      const istStr = now.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+      const sydStr = now.toLocaleTimeString('en-US', { timeZone: 'Australia/Sydney', hour: '2-digit', minute: '2-digit', hour12: true });
+      
+      const istParts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(now);
+      const day = istParts.find(p => p.type === 'weekday')?.value;
+      const hour = parseInt(istParts.find(p => p.type === 'hour')?.value || '0', 10);
+      const minute = parseInt(istParts.find(p => p.type === 'minute')?.value || '0', 10);
+      const totalMin = hour * 60 + minute;
+      const isWeekday = !['Sat', 'Sun'].includes(day);
+      const isOpen = isWeekday && totalMin >= (9 * 60 + 15) && totalMin <= (15 * 60 + 30);
+
+      setLiveClock({ ist: istStr, syd: sydStr, isMarketOpen: isOpen });
+    };
+
+    updateTimes();
+    const timer = setInterval(updateTimes, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
   const [tabCounts, setTabCounts] = useState({ monthly: 0, weekly: 0, daily: 0, manual: 0, darvas: 0, active_gtts: 0, todays_race: 0, race: 0 });
   const [selectedSymbols, setSelectedSymbols] = useState([]);
 
@@ -825,6 +849,28 @@ export default function App() {
         </div>
 
         <div className="header-actions">
+          {/* Dual Timezone Badge: IST & Sydney */}
+          <div className="status-badge" style={{ background: 'rgba(15, 23, 42, 0.7)', border: '1px solid rgba(148, 163, 184, 0.25)', gap: '8px' }} title={liveClock.isMarketOpen ? 'NSE India Market is OPEN (09:15 - 15:30 IST)' : 'NSE India Market is CLOSED'}>
+            <span className={`pulse-dot ${liveClock.isMarketOpen ? 'online' : ''}`} style={{ backgroundColor: liveClock.isMarketOpen ? '#22c55e' : '#64748b' }}></span>
+            <span style={{ fontWeight: 600, color: '#f8fafc', fontSize: '0.82rem' }}>
+              🇮🇳 {liveClock.ist || '--:--'} IST
+            </span>
+            <span style={{ color: '#64748b', fontSize: '0.75rem' }}>|</span>
+            <span style={{ color: '#94a3b8', fontSize: '0.80rem' }}>
+              🇦🇺 {liveClock.syd || '--:--'} Sydney
+            </span>
+            <span style={{
+              fontSize: '0.68rem',
+              padding: '2px 6px',
+              borderRadius: '4px',
+              fontWeight: 600,
+              backgroundColor: liveClock.isMarketOpen ? 'rgba(34, 197, 94, 0.2)' : 'rgba(148, 163, 184, 0.15)',
+              color: liveClock.isMarketOpen ? '#4ade80' : '#94a3b8'
+            }}>
+              {liveClock.isMarketOpen ? 'MARKET OPEN' : 'CLOSED'}
+            </span>
+          </div>
+
           {/* WebSocket Status Indicator */}
           <div className="status-badge">
             <span className={`pulse-dot ${wsStatus.running ? 'online' : ''}`}></span>
