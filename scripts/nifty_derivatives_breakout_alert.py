@@ -184,13 +184,15 @@ def auto_select_atm_strike(underlying_price: float, step: int = 50) -> int:
 
 def resolve_atm_straddle_contracts(
     underlying_price: float,
-    kite=None
+    kite=None,
+    strike_override: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Auto-calculates the approximate ATM strike from underlying/futures close and resolves
-    both the nearest-expiry ATM Call (CE) and ATM Put (PE) contracts from Zerodha NFO.
+    Auto-calculates the approximate ATM strike from underlying/futures close (or uses
+    strike_override when scanning {ATM-50, ATM, ATM+50}) and resolves both the
+    nearest-expiry Call (CE) and Put (PE) contracts from Zerodha NFO.
     """
-    atm_strike = auto_select_atm_strike(underlying_price, step=50)
+    atm_strike = int(strike_override) if strike_override is not None else auto_select_atm_strike(underlying_price, step=50)
     nfo_df = get_nfo_instruments_df(kite)
     if nfo_df.empty:
         return None
@@ -694,28 +696,44 @@ def run_derivatives_agents_debate(
     adx_val: float = 25.0,
     vol_surge_ratio: float = 1.5,
     volatility_regime: str = "NORMAL_REGIME",
+    active_opt_chg_pct: float = 0.0,
+    active_opt_vol_ratio: float = 1.0,
+    writer_oi_change_pct: float = 0.0,
+    short_covering_oi_pct: float = 0.0,
 ) -> Dict[str, Any]:
     """
     Runs a 6-Agent Quantitative Multi-Agent Debate (100% Zerodha Data, $0 AI Cost)
     BEFORE dispatching a Nifty Derivatives Telegram alert to judge how good the
-    alert is out of 10:
-      1. Institutional Flow & OI Analyst (evaluates Futures OI buildup & 5m volume surge)
-      2. Options Volatility & Straddle Analyst (evaluates ATM CE+PE expansion & regime)
+    alert is out of 10 (and gate out weak signals < 7.0/10):
+      1. Institutional Flow & OI Analyst (evaluates Futures OI + Option Writer Buildup / Short-Covering + Volume surge)
+      2. Options Volatility & Option-Buyer Analyst (evaluates Active CE/PE Surge % + Volume & ATM Straddle regime)
       3. Price Action & Momentum Analyst (evaluates Swing Breakout ATR, Body %, OBV & TSI)
-      4. Bull Researcher (argues upside/directional breakout conviction)
-      5. Bear / Trap Researcher (stress-tests whipsaw, ADX chop, or momentum divergence)
-      6. Chief Risk & Portfolio Judge (arbitrates Bull vs Bear debate -> final X.X / 10 rating)
+      4. Bull / Bear Directional Researcher (argues pro-breakout conviction)
+      5. Trap / Counter-Thesis Researcher (stress-tests whipsaw, ADX chop, or momentum divergence)
+      6. Chief Risk & Portfolio Judge (arbitrates Bull vs Bear debate -> final X.X / 10 rating & approval gate)
     """
     is_bull = direction.upper().startswith("BULL")
 
     # Agent 1: Institutional Flow & OI Analyst (0-10)
-    oi_multiple = abs(oi_change_pct) / max(0.01, oi_threshold_pct)
-    oi_agent_score = min(10.0, max(5.0, 6.2 + (oi_multiple - 1.0) * 2.2 + min(1.5, max(0.0, vol_surge_ratio - 1.0) * 1.1)))
+    # Evaluates either direct Futures OI buildup OR Options Institutional Flow (Put/Call Writing + Short Covering + Vol Surge)
+    fut_oi_multiple = abs(oi_change_pct) / max(0.01, oi_threshold_pct)
+    opt_flow_multiple = (max(0.0, writer_oi_change_pct) / 2.5) + (max(0.0, short_covering_oi_pct) / 3.0)
+    effective_oi_multiple = max(fut_oi_multiple, opt_flow_multiple)
+    oi_agent_score = min(
+        10.0,
+        max(
+            5.0,
+            6.2 + (effective_oi_multiple - 1.0) * 1.8 + min(1.8, max(0.0, vol_surge_ratio - 1.0) * 1.1)
+        )
+    )
     oi_agent_score = round(oi_agent_score, 1)
 
-    # Agent 2: Options Volatility & Straddle Analyst (0-10)
+    # Agent 2: Options Volatility & Option-Buyer Analyst (0-10)
+    # Evaluates both combined ATM Straddle expansion AND explosive Active Option Leg (CE/PE) breakout
     strad_multiple = straddle_exp_pct / max(0.01, straddle_threshold_pct)
-    strad_agent_score = min(10.0, max(5.0, 6.2 + (strad_multiple - 1.0) * 2.4))
+    opt_leg_multiple = (active_opt_chg_pct / 5.0) + max(0.0, (active_opt_vol_ratio - 1.0) * 0.6)
+    effective_opt_multiple = max(strad_multiple, opt_leg_multiple)
+    strad_agent_score = min(10.0, max(5.0, 6.2 + (effective_opt_multiple - 1.0) * 1.8))
     if volatility_regime == "LOW_VOL_SQUEEZE":
         strad_agent_score = min(10.0, strad_agent_score + 0.5)  # Squeeze breakout bonus
     strad_agent_score = round(strad_agent_score, 1)
@@ -730,7 +748,7 @@ def run_derivatives_agents_debate(
     pa_agent_score = round(min(10.0, max(4.5, pa_base)), 1)
 
     # Agent 4: Directional Pro-Breakout Researcher (Bull/Bear Lead)
-    pro_score = round((oi_agent_score * 0.38) + (strad_agent_score * 0.32) + (pa_agent_score * 0.30), 1)
+    pro_score = round((oi_agent_score * 0.36) + (strad_agent_score * 0.34) + (pa_agent_score * 0.30), 1)
 
     # Agent 5: Counter-Thesis / Trap Researcher (evaluates whipsaw risk penalty 0.0 - 2.5)
     trap_penalty = 0.0
@@ -744,7 +762,7 @@ def run_derivatives_agents_debate(
     if not tsi_aligned:
         trap_penalty += 0.5
         trap_reasons.append("TSI lag")
-    if vol_surge_ratio < 1.05:
+    if vol_surge_ratio < 1.05 and active_opt_vol_ratio < 1.15:
         trap_penalty += 0.4
         trap_reasons.append(f"Modest Vol ({vol_surge_ratio:.2f}x)")
     if breakout_distance_atr > 2.2:
@@ -752,25 +770,26 @@ def run_derivatives_agents_debate(
         trap_reasons.append("Extended ATR")
     trap_penalty = round(min(2.5, trap_penalty), 1)
 
-    # Agent 6: Chief Risk & Portfolio Judge (final synthesis out of 10)
+    # Agent 6: Chief Risk & Portfolio Judge (final synthesis out of 10 + Pre-Alert Approval Gate)
     adx_bonus = 0.4 if adx_val >= 25.0 else (0.2 if adx_val >= 20.0 else 0.0)
     final_debate_rating = round(min(10.0, max(1.0, pro_score + adx_bonus - trap_penalty)), 1)
+    debate_approved = bool(final_debate_rating >= 7.0)
 
     if final_debate_rating >= 8.5:
         verdict = "STRONG CONSENSUS 🔥"
     elif final_debate_rating >= 7.5:
         verdict = "DEBATE APPROVED ✅"
-    elif final_debate_rating >= 6.5:
-        verdict = "MODERATE CONVICTION ⚡"
+    elif final_debate_rating >= 7.0:
+        verdict = "APPROVED CONVICTION ⚡"
     else:
-        verdict = "CAUTIOUS / SPLIT ⚠️"
+        verdict = "REJECTED BY DEBATE ⚠️"
 
     filled = int(round(final_debate_rating))
     debate_bar = "█" * filled + "░" * (10 - filled)
 
     risk_note = "Clean Momentum" if not trap_reasons else ", ".join(trap_reasons[:2])
     summary = (
-        f"OI {oi_agent_score}/10 • Straddle {strad_agent_score}/10 • "
+        f"OI/Flow {oi_agent_score}/10 • Option/Vol {strad_agent_score}/10 • "
         f"PA/Mom {pa_agent_score}/10 | Risk: {risk_note}"
     )
 
@@ -779,6 +798,7 @@ def run_derivatives_agents_debate(
         "agents_debate_verdict": verdict,
         "agents_debate_bar": debate_bar,
         "agents_debate_summary": summary,
+        "debate_approved": debate_approved,
         "oi_agent_score": oi_agent_score,
         "straddle_agent_score": strad_agent_score,
         "momentum_agent_score": pa_agent_score,
@@ -795,20 +815,21 @@ def evaluate_three_confirmations(
     pe_df: pd.DataFrame,
     futures_symbol: str = "NIFTY1!",
     atm_strike: Optional[int] = None,
-    expiry_str: str = ""
+    expiry_str: str = "",
+    ce_symbol: str = "",
+    pe_symbol: str = "",
 ) -> Dict[str, Any]:
     """
-    Evaluates the 3 mandatory confirmations on the latest 5-minute candle:
-      1. Confirmation 1 – Futures OI Buildup (Long Buildup or Short Buildup)
-      2. Confirmation 2 – ATM Straddle Premium Expansion (CE + PE Combined Premium)
-      3. Confirmation 3 – Price Action (N-bar Swing High/Low breakout + Strong Body)
-
-    Alert Rules:
-      - Bullish Alert ONLY when ALL three are true:
-        Long Buildup + ATM Straddle Expansion + Bullish Price Action
-      - Bearish Alert ONLY when ALL three are true:
-        Short Buildup + ATM Straddle Expansion + Bearish Price Action
-      - Never triggers if even one confirmation is missing.
+    Evaluates the 3 mandatory confirmations + Pre-Alert 6-Agent Debate Gate on the 5-minute candle:
+      1. Confirmation 1 – Institutional OI & Volume Flow:
+         - Either Futures OI Buildup OR Options Institutional Flow (Put Writing + Call Short-Covering
+           with >1.3x Option & Futures Volume surge for Bullish; Call Writing + Put Short-Covering for Bearish).
+      2. Confirmation 2 – ATM Straddle Expansion OR Active Option Leg Breakout:
+         - Either Combined CE+PE Straddle expands >= auto threshold OR Active Option Leg (CE for Bullish,
+           PE for Bearish) surges >= +5.0% with >1.25x Volume & breaks its 3-bar high.
+      3. Confirmation 3 – Price Action (N-bar Swing High/Low breakout + Strong Body).
+      4. Mandatory Pre-Alert 6-Agent Debate Gate:
+         - The 6 specialized agents debate the setup and must rate it >= 7.0 / 10 before an alert is triggered.
     """
     if fut_df.empty or len(fut_df) < 15:
         return {"alert_triggered": False, "reason": "Insufficient Nifty Futures candle history"}
@@ -838,6 +859,10 @@ def evaluate_three_confirmations(
     curr_oi = float(curr_fut["OI"])
     prev_oi = float(prev_fut["OI"])
 
+    avg_vol_20 = float(df_ind["Volume"].iloc[-21:-1].mean()) if len(df_ind) >= 21 else float(df_ind["Volume"].mean())
+    curr_vol = float(curr_fut.get("Volume", avg_vol_20))
+    vol_surge_ratio = curr_vol / max(1.0, avg_vol_20)
+
     # Fetch MongoDB continuous calibration & update past outcomes
     calibration = update_and_fetch_historical_refinement(curr_close)
 
@@ -846,31 +871,82 @@ def evaluate_three_confirmations(
     if atm_strike is not None:
         auto_params["atm_strike"] = int(atm_strike)
 
+    # Extract CE & PE active option leg metrics (Price, Volume, OI flow)
+    ce_curr = float(ce_df["Close"].iloc[-1]) if not ce_df.empty else 0.0
+    ce_prev = float(ce_df["Close"].iloc[-2]) if len(ce_df) >= 2 else ce_curr
+    ce_open = float(ce_df["Open"].iloc[-1]) if ("Open" in ce_df.columns and not ce_df.empty) else ce_prev
+    ce_high = float(ce_df["High"].iloc[-1]) if ("High" in ce_df.columns and not ce_df.empty) else ce_curr
+    ce_chg_pct = ((ce_curr - ce_prev) / ce_prev * 100.0) if ce_prev > 0 else 0.0
+    ce_vol_curr = float(ce_df["Volume"].iloc[-1]) if ("Volume" in ce_df.columns and not ce_df.empty) else 0.0
+    ce_vol_avg = float(ce_df["Volume"].iloc[-21:-1].mean()) if ("Volume" in ce_df.columns and len(ce_df) >= 5) else max(1.0, ce_vol_curr)
+    ce_vol_ratio = ce_vol_curr / max(1.0, ce_vol_avg) if ce_vol_avg > 0 else 1.5
+    ce_oi_curr = float(ce_df["OI"].iloc[-1]) if ("OI" in ce_df.columns and not ce_df.empty) else 0.0
+    ce_oi_prev = float(ce_df["OI"].iloc[-2]) if ("OI" in ce_df.columns and len(ce_df) >= 2) else ce_oi_curr
+    ce_oi_diff = ce_oi_curr - ce_oi_prev
+    ce_oi_diff_pct = ((ce_oi_diff / ce_oi_prev) * 100.0) if ce_oi_prev > 0 else 0.0
+    ce_prev_hh3 = float(ce_df["High"].iloc[-4:-1].max()) if ("High" in ce_df.columns and len(ce_df) >= 4) else ce_prev
+
+    pe_curr = float(pe_df["Close"].iloc[-1]) if not pe_df.empty else 0.0
+    pe_prev = float(pe_df["Close"].iloc[-2]) if len(pe_df) >= 2 else pe_curr
+    pe_open = float(pe_df["Open"].iloc[-1]) if ("Open" in pe_df.columns and not pe_df.empty) else pe_prev
+    pe_high = float(pe_df["High"].iloc[-1]) if ("High" in pe_df.columns and not pe_df.empty) else pe_curr
+    pe_chg_pct = ((pe_curr - pe_prev) / pe_prev * 100.0) if pe_prev > 0 else 0.0
+    pe_vol_curr = float(pe_df["Volume"].iloc[-1]) if ("Volume" in pe_df.columns and not pe_df.empty) else 0.0
+    pe_vol_avg = float(pe_df["Volume"].iloc[-21:-1].mean()) if ("Volume" in pe_df.columns and len(pe_df) >= 5) else max(1.0, pe_vol_curr)
+    pe_vol_ratio = pe_vol_curr / max(1.0, pe_vol_avg) if pe_vol_avg > 0 else 1.5
+    pe_oi_curr = float(pe_df["OI"].iloc[-1]) if ("OI" in pe_df.columns and not pe_df.empty) else 0.0
+    pe_oi_prev = float(pe_df["OI"].iloc[-2]) if ("OI" in pe_df.columns and len(pe_df) >= 2) else pe_oi_curr
+    pe_oi_diff = pe_oi_curr - pe_oi_prev
+    pe_oi_diff_pct = ((pe_oi_diff / pe_oi_prev) * 100.0) if pe_oi_prev > 0 else 0.0
+    pe_prev_hh3 = float(pe_df["High"].iloc[-4:-1].max()) if ("High" in pe_df.columns and len(pe_df) >= 4) else pe_prev
+
     # -------------------------------------------------------------------------
-    # CONFIRMATION 1: FUTURES OI BUILDUP
+    # CONFIRMATION 1: INSTITUTIONAL OI & VOLUME FLOW (FUTURES OR OPTIONS)
     # -------------------------------------------------------------------------
     oi_diff = curr_oi - prev_oi
     oi_diff_pct = ((curr_oi - prev_oi) / prev_oi * 100.0) if prev_oi > 0 else 0.0
     oi_thresh_abs = auto_params["oi_threshold_abs"]
     oi_thresh_pct = auto_params["oi_threshold_pct"]
 
-    oi_exceeds_threshold = (oi_diff >= oi_thresh_abs) or (oi_diff_pct >= oi_thresh_pct)
-    c1_long_buildup = (curr_close > prev_close) and (curr_oi > prev_oi) and oi_exceeds_threshold
-    c1_short_buildup = (curr_close < prev_close) and (curr_oi > prev_oi) and oi_exceeds_threshold
+    fut_oi_exceeds = (oi_diff >= oi_thresh_abs) or (oi_diff_pct >= oi_thresh_pct)
+    fut_long_buildup = (curr_close > prev_close) and (curr_oi > prev_oi) and fut_oi_exceeds
+    fut_short_buildup = (curr_close < prev_close) and (curr_oi > prev_oi) and fut_oi_exceeds
+
+    # Options Institutional Bullish Flow: Put Writing (PE OI up) + Call Short Covering / Volume Surge
+    opt_bullish_flow = (
+        (curr_close > prev_close)
+        and (vol_surge_ratio >= 1.25)
+        and (ce_vol_ratio >= 1.25)
+        and ((pe_oi_diff > 0 and pe_oi_diff_pct >= 0.5) or (ce_oi_diff < 0 and abs(ce_oi_diff_pct) >= 1.0) or (ce_chg_pct >= 8.0))
+    )
+    # Options Institutional Bearish Flow: Call Writing (CE OI up) + Put Short Covering / Volume Surge
+    opt_bearish_flow = (
+        (curr_close < prev_close)
+        and (vol_surge_ratio >= 1.25)
+        and (pe_vol_ratio >= 1.25)
+        and ((ce_oi_diff > 0 and ce_oi_diff_pct >= 0.5) or (pe_oi_diff < 0 and abs(pe_oi_diff_pct) >= 1.0) or (pe_chg_pct >= 8.0))
+    )
+
+    c1_long_buildup = bool(fut_long_buildup or opt_bullish_flow)
+    c1_short_buildup = bool(fut_short_buildup or opt_bearish_flow)
 
     # -------------------------------------------------------------------------
-    # CONFIRMATION 2: ATM STRADDLE PREMIUM EXPANSION
+    # CONFIRMATION 2: ATM STRADDLE EXPANSION OR ACTIVE OPTION LEG BREAKOUT
     # -------------------------------------------------------------------------
     straddle_curr = float(straddle_series.iloc[-1])
     straddle_prev = float(straddle_series.iloc[-2])
-    ce_curr = float(ce_df["Close"].iloc[-1]) if not ce_df.empty else straddle_curr * 0.5
-    pe_curr = float(pe_df["Close"].iloc[-1]) if not pe_df.empty else straddle_curr * 0.5
 
     straddle_diff = straddle_curr - straddle_prev
     straddle_exp_pct = ((straddle_curr - straddle_prev) / straddle_prev * 100.0) if straddle_prev > 0 else 0.0
     straddle_thresh_pct = auto_params["straddle_expansion_threshold_pct"]
 
-    c2_straddle_expansion = (straddle_curr > straddle_prev) and (straddle_exp_pct >= straddle_thresh_pct)
+    c2_straddle_only = (straddle_curr > straddle_prev) and (straddle_exp_pct >= straddle_thresh_pct)
+    c2_ce_breakout = (ce_curr > ce_open) and (ce_chg_pct >= 5.0) and (ce_curr > ce_prev_hh3 or ce_vol_ratio >= 1.25)
+    c2_pe_breakout = (pe_curr > pe_open) and (pe_chg_pct >= 5.0) and (pe_curr > pe_prev_hh3 or pe_vol_ratio >= 1.25)
+
+    c2_bull_option_confirm = bool(c2_straddle_only or c2_ce_breakout)
+    c2_bear_option_confirm = bool(c2_straddle_only or c2_pe_breakout)
+    c2_straddle_expansion = bool(c2_bull_option_confirm or c2_bear_option_confirm)
 
     # -------------------------------------------------------------------------
     # CONFIRMATION 3: PRICE ACTION (SWING LOOKBACK N + BODY STRENGTH)
@@ -888,25 +964,39 @@ def evaluate_three_confirmations(
     c3_bearish_pa = (curr_close < swing_ll_n) and (curr_close < curr_open) and is_strong_body
 
     # -------------------------------------------------------------------------
-    # STRICT ALERT TRIGGER CHECK (ALL THREE MUST BE TRUE)
+    # STRICT ALERT TRIGGER CHECK + MANDATORY PRE-ALERT 6-AGENT DEBATE GATE
     # -------------------------------------------------------------------------
-    bullish_alert = bool(c1_long_buildup and c2_straddle_expansion and c3_bullish_pa)
-    bearish_alert = bool(c1_short_buildup and c2_straddle_expansion and c3_bearish_pa)
-    alert_triggered = bullish_alert or bearish_alert
+    bullish_candidate = bool(c1_long_buildup and c2_bull_option_confirm and c3_bullish_pa)
+    bearish_candidate = bool(c1_short_buildup and c2_bear_option_confirm and c3_bearish_pa)
+    raw_candidate = bullish_candidate or bearish_candidate
 
     confirmations_detail = {
         "c1_long_buildup": bool(c1_long_buildup),
         "c1_short_buildup": bool(c1_short_buildup),
+        "c1_fut_long_buildup": bool(fut_long_buildup),
+        "c1_opt_bullish_flow": bool(opt_bullish_flow),
         "c1_oi_current": int(curr_oi),
         "c1_oi_previous": int(prev_oi),
         "c1_oi_change": int(oi_diff),
         "c1_oi_change_pct": round(oi_diff_pct, 3),
+        "c1_ce_oi_change": int(ce_oi_diff),
+        "c1_ce_oi_change_pct": round(ce_oi_diff_pct, 2),
+        "c1_pe_oi_change": int(pe_oi_diff),
+        "c1_pe_oi_change_pct": round(pe_oi_diff_pct, 2),
         "c2_straddle_expansion": bool(c2_straddle_expansion),
+        "c2_ce_breakout": bool(c2_ce_breakout),
+        "c2_pe_breakout": bool(c2_pe_breakout),
         "c2_straddle_current": round(straddle_curr, 2),
         "c2_straddle_previous": round(straddle_prev, 2),
         "c2_straddle_change_pct": round(straddle_exp_pct, 3),
         "c2_ce_ltp": round(ce_curr, 2),
+        "c2_ce_prev": round(ce_prev, 2),
+        "c2_ce_chg_pct": round(ce_chg_pct, 2),
+        "c2_ce_vol_ratio": round(ce_vol_ratio, 2),
         "c2_pe_ltp": round(pe_curr, 2),
+        "c2_pe_prev": round(pe_prev, 2),
+        "c2_pe_chg_pct": round(pe_chg_pct, 2),
+        "c2_pe_vol_ratio": round(pe_vol_ratio, 2),
         "c3_bullish_price_action": bool(c3_bullish_pa),
         "c3_bearish_price_action": bool(c3_bearish_pa),
         "c3_swing_lookback_n": n_lookback,
@@ -916,26 +1006,42 @@ def evaluate_three_confirmations(
     }
 
     signal_payload = None
-    if alert_triggered:
-        direction = "BULLISH" if bullish_alert else "BEARISH"
+    alert_triggered = False
+
+    if raw_candidate:
+        direction = "BULLISH" if bullish_candidate else "BEARISH"
         atr_val = max(1.0, float(auto_params["atr_14"]))
-        breakout_dist = (curr_close - swing_hh_n) / atr_val if bullish_alert else (swing_ll_n - curr_close) / atr_val
+        breakout_dist = (curr_close - swing_hh_n) / atr_val if bullish_candidate else (swing_ll_n - curr_close) / atr_val
 
         obv_aligned = (
             float(curr_fut["OBV"]) > float(curr_fut["OBV_EMA20"])
-            if bullish_alert else
+            if bullish_candidate else
             float(curr_fut["OBV"]) < float(curr_fut["OBV_EMA20"])
         )
         tsi_aligned = (
             float(curr_fut["TSI"]) > float(curr_fut["TSI_Signal"])
-            if bullish_alert else
+            if bullish_candidate else
             float(curr_fut["TSI"]) < float(curr_fut["TSI_Signal"])
         )
 
+        active_opt_chg = ce_chg_pct if bullish_candidate else pe_chg_pct
+        active_opt_vol_r = ce_vol_ratio if bullish_candidate else pe_vol_ratio
+        writer_oi_pct = pe_oi_diff_pct if bullish_candidate else ce_oi_diff_pct
+        sc_oi_pct = abs(ce_oi_diff_pct) if (bullish_candidate and ce_oi_diff < 0) else (abs(pe_oi_diff_pct) if (not bullish_candidate and pe_oi_diff < 0) else 0.0)
+        active_opt_symbol = (
+            (ce_symbol or f"NIFTY {auto_params['atm_strike']} CE")
+            if bullish_candidate else
+            (pe_symbol or f"NIFTY {auto_params['atm_strike']} PE")
+        )
+
+        # Effective OI & Option expansion metrics for Signal Rating
+        eff_oi_pct = max(abs(oi_diff_pct), max(0.0, writer_oi_pct) * 0.04 + sc_oi_pct * 0.03)
+        eff_strad_pct = max(straddle_exp_pct, active_opt_chg * 0.25)
+
         rating_info = calculate_signal_rating_out_of_10(
-            oi_change_pct=abs(oi_diff_pct),
+            oi_change_pct=eff_oi_pct,
             oi_threshold_pct=oi_thresh_pct,
-            straddle_exp_pct=straddle_exp_pct,
+            straddle_exp_pct=eff_strad_pct,
             straddle_threshold_pct=straddle_thresh_pct,
             body_ratio=curr_body_ratio,
             body_threshold_ratio=body_thresh_ratio,
@@ -944,10 +1050,7 @@ def evaluate_three_confirmations(
             tsi_aligned=tsi_aligned
         )
 
-        avg_vol_20 = float(df_ind["Volume"].iloc[-21:-1].mean()) if len(df_ind) >= 21 else float(df_ind["Volume"].mean())
-        curr_vol = float(curr_fut.get("Volume", avg_vol_20))
-        vol_surge_ratio = curr_vol / max(1.0, avg_vol_20)
-
+        # Run Mandatory Pre-Alert 6-Agent Debate
         debate_info = run_derivatives_agents_debate(
             direction=direction,
             oi_change_pct=abs(oi_diff_pct),
@@ -962,39 +1065,54 @@ def evaluate_three_confirmations(
             adx_val=float(auto_params.get("adx_14", 25.0)),
             vol_surge_ratio=vol_surge_ratio,
             volatility_regime=str(auto_params.get("volatility_regime", "NORMAL_REGIME")),
+            active_opt_chg_pct=active_opt_chg,
+            active_opt_vol_ratio=active_opt_vol_r,
+            writer_oi_change_pct=writer_oi_pct,
+            short_covering_oi_pct=sc_oi_pct,
         )
 
-        signal_payload = {
-            "alert_triggered": True,
-            "direction": direction,
-            "signal_title": f"NIFTY DERIVATIVES {direction} BREAKOUT ALERT",
-            "futures_symbol": futures_symbol,
-            "expiry_str": expiry_str,
-            "timeframe": "5m",
-            "futures_close": round(curr_close, 2),
-            "futures_prev_close": round(prev_close, 2),
-            "atm_strike": auto_params["atm_strike"],
-            "straddle_current": round(straddle_curr, 2),
-            "straddle_prev": round(straddle_prev, 2),
-            "straddle_exp_pct": round(straddle_exp_pct, 2),
-            "ce_ltp": round(ce_curr, 2),
-            "pe_ltp": round(pe_curr, 2),
-            "swing_trigger_level": round(swing_hh_n if bullish_alert else swing_ll_n, 2),
-            "stop_level": round(curr_low if bullish_alert else curr_high, 2),
-            "rating": rating_info["rating"],
-            "conviction": rating_info["conviction"],
-            "rating_bar": rating_info["bar"],
-            "rating_breakdown": rating_info,
-            "agents_debate_rating": debate_info["agents_debate_rating"],
-            "agents_debate_verdict": debate_info["agents_debate_verdict"],
-            "agents_debate_bar": debate_info["agents_debate_bar"],
-            "agents_debate_summary": debate_info["agents_debate_summary"],
-            "agents_debate": debate_info,
-            "auto_parameters": auto_params,
-            "confirmations": confirmations_detail,
-            "bar_time": str(df_ind.index[-1]),
-            "df": df_ind
-        }
+        if debate_info["debate_approved"]:
+            alert_triggered = True
+            signal_payload = {
+                "alert_triggered": True,
+                "direction": direction,
+                "signal_title": f"NIFTY DERIVATIVES {direction} BREAKOUT ALERT",
+                "futures_symbol": futures_symbol,
+                "active_option_symbol": active_opt_symbol,
+                "active_option_chg_pct": round(active_opt_chg, 2),
+                "active_option_vol_ratio": round(active_opt_vol_r, 2),
+                "ce_symbol": ce_symbol,
+                "pe_symbol": pe_symbol,
+                "expiry_str": expiry_str,
+                "timeframe": "5m",
+                "futures_close": round(curr_close, 2),
+                "futures_prev_close": round(prev_close, 2),
+                "atm_strike": auto_params["atm_strike"],
+                "straddle_current": round(straddle_curr, 2),
+                "straddle_prev": round(straddle_prev, 2),
+                "straddle_exp_pct": round(straddle_exp_pct, 2),
+                "ce_ltp": round(ce_curr, 2),
+                "pe_ltp": round(pe_curr, 2),
+                "swing_trigger_level": round(swing_hh_n if bullish_candidate else swing_ll_n, 2),
+                "stop_level": round(curr_low if bullish_candidate else curr_high, 2),
+                "rating": rating_info["rating"],
+                "conviction": rating_info["conviction"],
+                "rating_bar": rating_info["bar"],
+                "rating_breakdown": rating_info,
+                "agents_debate_rating": debate_info["agents_debate_rating"],
+                "agents_debate_verdict": debate_info["agents_debate_verdict"],
+                "agents_debate_bar": debate_info["agents_debate_bar"],
+                "agents_debate_summary": debate_info["agents_debate_summary"],
+                "agents_debate": debate_info,
+                "auto_parameters": auto_params,
+                "confirmations": confirmations_detail,
+                "bar_time": str(df_ind.index[-1]),
+                "df": df_ind
+            }
+        else:
+            confirmations_detail["debate_rejected_reason"] = (
+                f"Blocked by Pre-Alert 6-Agent Debate Gate ({debate_info['agents_debate_rating']}/10 < 7.0)"
+            )
 
     # Persist auto-parameters and signal to MongoDB for continuous refinement
     persist_parameters_and_signal_to_mongodb(
@@ -1009,7 +1127,7 @@ def evaluate_three_confirmations(
 
     return {
         "alert_triggered": False,
-        "reason": "Not all 3 confirmations met simultaneously",
+        "reason": confirmations_detail.get("debate_rejected_reason", "Not all 3 confirmations met simultaneously"),
         "futures_symbol": futures_symbol,
         "futures_close": round(curr_close, 2),
         "auto_parameters": auto_params,
@@ -1091,6 +1209,31 @@ def format_three_confirmation_telegram_alert(signal_data: Dict[str, Any]) -> str
     debate_verdict = signal_data.get("agents_debate_verdict", "STRONG CONSENSUS 🔥")
     debate_summary = signal_data.get("agents_debate_summary", "")
 
+    active_opt_sym = signal_data.get(
+        "active_option_symbol",
+        f"NIFTY {atm_strike} {'CE' if is_bull else 'PE'}"
+    )
+    active_opt_chg = signal_data.get(
+        "active_option_chg_pct",
+        conf.get("c2_ce_chg_pct" if is_bull else "c2_pe_chg_pct", strad_pct)
+    )
+    active_opt_vol_r = signal_data.get(
+        "active_option_vol_ratio",
+        conf.get("c2_ce_vol_ratio" if is_bull else "c2_pe_vol_ratio", 1.5)
+    )
+    ce_oi_chg = conf.get("c1_ce_oi_change", 0)
+    ce_oi_pct = conf.get("c1_ce_oi_change_pct", 0.0)
+    pe_oi_chg = conf.get("c1_pe_oi_change", 0)
+    pe_oi_pct = conf.get("c1_pe_oi_change_pct", 0.0)
+
+    if conf.get("c1_fut_long_buildup") or (not is_bull and oi_chg > 0):
+        c1_flow_line = f"• Futures OI: <b>{oi_chg:+,} ({oi_chg_pct:+.2f}%)</b> | Auto Min: +{oi_thresh_pct:.2f}%"
+    else:
+        c1_flow_line = (
+            f"• Options OI Flow: <b>PE {pe_oi_chg:+,} ({pe_oi_pct:+.2f}%) | CE {ce_oi_chg:+,} ({ce_oi_pct:+.2f}%)</b>\n"
+            f"• Futures OI: <b>{oi_chg:+,} ({oi_chg_pct:+.2f}%)</b> (Short Covering + Writer Floor)"
+        )
+
     now_time = datetime.now().strftime("%I:%M %p")
 
     msg = (
@@ -1101,19 +1244,20 @@ def format_three_confirmation_telegram_alert(signal_data: Dict[str, Any]) -> str
         f"🗣️ <i>{debate_summary}</i>\n"
         f"📊 <code>[{r_bar}]</code>\n"
         f"📈 <b>Nifty Futures ({fut_sym})</b>: <b>₹{fut_close:,.2f}</b>\n"
-        f"🎯 <b>Auto ATM Strike</b>: <b>{atm_strike}{exp_Part}</b>\n"
+        f"🔥 <b>Active Option</b>: <b>{active_opt_sym} ({active_opt_chg:+.2f}% | {active_opt_vol_r:.1f}x Vol)</b>\n"
+        f"🎯 <b>Strike / Expiry</b>: <b>{atm_strike}{exp_Part}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ <b>1. Futures OI Buildup ({buildup_label})</b>\n"
-        f"• OI Change: <b>+{oi_chg:,} ({oi_chg_pct:+.2f}%)</b> | Auto Min: +{oi_thresh_pct:.2f}%\n\n"
-        f"✅ <b>2. ATM Straddle Premium Expansion ({atm_strike} CE+PE)</b>\n"
-        f"• Combined Premium: <b>₹{strad_prev:,.2f} → ₹{strad_curr:,.2f} ({strad_pct:+.2f}%)</b>\n"
-        f"• Legs: CE ₹{ce_ltp:,.2f} + PE ₹{pe_ltp:,.2f} | Auto Min: +{strad_thresh:.2f}%\n\n"
+        f"✅ <b>1. Institutional OI & Volume Flow ({buildup_label})</b>\n"
+        f"{c1_flow_line}\n\n"
+        f"✅ <b>2. Option Leg Breakout / Straddle Expansion ({atm_strike})</b>\n"
+        f"• Active Leg ({active_opt_sym}): <b>₹{ce_ltp if is_bull else pe_ltp:,.2f} ({active_opt_chg:+.2f}%)</b>\n"
+        f"• Combined Straddle: <b>₹{strad_prev:,.2f} → ₹{strad_curr:,.2f} ({strad_pct:+.2f}%)</b> (CE ₹{ce_ltp:,.2f} + PE ₹{pe_ltp:,.2f})\n\n"
         f"✅ <b>3. {direction.title()} Price Action Breakout</b>\n"
         f"• {n_bars}-Bar Swing {'High' if is_bull else 'Low'} Broken: <b>₹{swing_lvl:,.2f}</b>\n"
         f"• Candle Body Strength: <b>{body_pct:.1f}%</b> (Auto Min: {body_thresh:.1f}% | {regime})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📸 <i>5m Chart Attached: Candlestick + Volume + OBV + TSI</i>\n"
-        f"⏰ {now_time} | ⚡ <i>Zerodha 3-Confirmation Engine</i>"
+        f"📸 <i>5m Chart Attached: Candlestick + Volume (w/ OBV) + OBV + TSI</i>\n"
+        f"⏰ {now_time} | ⚡ <i>Zerodha Option-Buyer v2.0 + 6-Agent Debate Gate</i>"
     )
     return msg
 
@@ -1263,12 +1407,12 @@ def check_and_trigger_spot_index_breakout(kite=None) -> Dict[str, Any]:
     Live 5-minute scanner executed by the server background loop:
       1. Resolves active near-month Nifty Futures from Zerodha NFO.
       2. Fetches 5m Futures candles with Open Interest (OI).
-      3. Auto-selects the nearest ATM strike and fetches 5m candles for ATM CE + ATM PE.
-      4. Evaluates Confirmation 1 (Futures OI Buildup), Confirmation 2 (ATM Straddle
-         Premium Expansion), and Confirmation 3 (Price Action Swing Breakout + Body Strength)
-         using fully automated, MongoDB-refined thresholds.
-      5. Dispatches a Telegram alert with 1-10 rating + Candlestick/Volume/OBV/TSI chart
-         ONLY when ALL three confirmations are simultaneously true.
+      3. Evaluates both the live 5m bar and the just-completed 5m bar (`iloc[:-1]`)
+         across the ATM strikes spanning the candle's Open & Close (`{ATM_open, ATM_close}`)
+         so explosive option breakouts (e.g. `NIFTY 22800 CE` when Futures jumps from 22,831 to 22,881)
+         are never missed by mid-bar polling or a 50-pt strike shift.
+      4. Requires ALL 3 Confirmations + Mandatory Pre-Alert 6-Agent Debate Gate (>= 7.0/10)
+         before dispatching the Telegram alert with the 5m Candlestick + Volume (w/ OBV) + OBV + TSI chart.
     """
     global _ALERT_DEDUP_STATE
     kite = kite or get_kite_client()
@@ -1285,35 +1429,74 @@ def check_and_trigger_spot_index_breakout(kite=None) -> Dict[str, Any]:
         kite=kite,
         tradingsymbol=fut_info["tradingsymbol"]
     )
-    if fut_df.empty or len(fut_df) < 15:
+    if fut_df.empty or len(fut_df) < 16:
         return {"alert_sent": False, "count": 0, "reason": "Insufficient Nifty Futures 5m candles from Zerodha"}
 
-    underlying_close = float(fut_df["Close"].iloc[-1])
-    straddle_info = resolve_atm_straddle_contracts(underlying_close, kite=kite)
-    if not straddle_info:
-        return {"alert_sent": False, "count": 0, "reason": "Could not resolve ATM CE/PE straddle contracts"}
+    # Evaluate both the live candle and the just-completed candle across candidate ATM strikes
+    candidate_slices = [
+        ("live_bar", fut_df),
+        ("completed_bar", fut_df.iloc[:-1]),
+    ]
 
-    ce_df = fetch_zerodha_5m_candles_with_oi(
-        instrument_token=straddle_info["ce_token"],
-        days=5,
-        kite=kite,
-        tradingsymbol=straddle_info["ce_symbol"]
-    )
-    pe_df = fetch_zerodha_5m_candles_with_oi(
-        instrument_token=straddle_info["pe_token"],
-        days=5,
-        kite=kite,
-        tradingsymbol=straddle_info["pe_symbol"]
-    )
+    strike_cache: Dict[int, Tuple[Dict[str, Any], pd.DataFrame, pd.DataFrame]] = {}
+    best_triggered: Optional[Dict[str, Any]] = None
+    last_eval: Optional[Dict[str, Any]] = None
 
-    eval_res = evaluate_three_confirmations(
-        fut_df=fut_df,
-        ce_df=ce_df,
-        pe_df=pe_df,
-        futures_symbol=fut_info["tradingsymbol"],
-        atm_strike=straddle_info["atm_strike"],
-        expiry_str=straddle_info["expiry"]
-    )
+    for slice_label, f_slice in candidate_slices:
+        if len(f_slice) < 15:
+            continue
+        bar_open = float(f_slice["Open"].iloc[-1])
+        bar_close = float(f_slice["Close"].iloc[-1])
+        candidate_strikes = []
+        for s in (auto_select_atm_strike(bar_close, step=50), auto_select_atm_strike(bar_open, step=50)):
+            if s not in candidate_strikes:
+                candidate_strikes.append(s)
+
+        for strike_val in candidate_strikes:
+            if strike_val not in strike_cache:
+                s_info = resolve_atm_straddle_contracts(bar_close, kite=kite, strike_override=strike_val)
+                if not s_info:
+                    continue
+                c_df_full = fetch_zerodha_5m_candles_with_oi(
+                    instrument_token=s_info["ce_token"],
+                    days=5,
+                    kite=kite,
+                    tradingsymbol=s_info["ce_symbol"]
+                )
+                p_df_full = fetch_zerodha_5m_candles_with_oi(
+                    instrument_token=s_info["pe_token"],
+                    days=5,
+                    kite=kite,
+                    tradingsymbol=s_info["pe_symbol"]
+                )
+                strike_cache[strike_val] = (s_info, c_df_full, p_df_full)
+
+            s_info, c_df_full, p_df_full = strike_cache[strike_val]
+            last_ts = f_slice.index[-1]
+            c_slice = c_df_full[c_df_full.index <= last_ts] if not c_df_full.empty else c_df_full
+            p_slice = p_df_full[p_df_full.index <= last_ts] if not p_df_full.empty else p_df_full
+
+            eval_res = evaluate_three_confirmations(
+                fut_df=f_slice,
+                ce_df=c_slice,
+                pe_df=p_slice,
+                futures_symbol=fut_info["tradingsymbol"],
+                atm_strike=s_info["atm_strike"],
+                expiry_str=s_info["expiry"],
+                ce_symbol=s_info["ce_symbol"],
+                pe_symbol=s_info["pe_symbol"],
+            )
+            if last_eval is None:
+                last_eval = eval_res
+
+            if eval_res.get("alert_triggered"):
+                if (
+                    best_triggered is None
+                    or float(eval_res.get("agents_debate_rating", 0.0)) > float(best_triggered.get("agents_debate_rating", 0.0))
+                ):
+                    best_triggered = eval_res
+
+    eval_res = best_triggered if best_triggered is not None else (last_eval or {"alert_triggered": False, "reason": "Confirmations not met"})
 
     if not eval_res.get("alert_triggered"):
         return {
@@ -1404,10 +1587,45 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Nifty Derivatives 3-Confirmation Automated Alert Engine")
     parser.add_argument("--direction", type=str, default="BULLISH", choices=["BULLISH", "BEARISH"], help="Signal direction to test")
     parser.add_argument("--live", action="store_true", help="Run live scan against Zerodha API")
+    parser.add_argument("--replay-time", type=str, default=None, help="Replay live Zerodha 5m bar up to timestamp (e.g. 10:05:00)")
+    parser.add_argument("--strike", type=int, default=None, help="Optional strike override for replay")
     parser.add_argument("--force-send", action="store_true", help="Dispatch alert to Telegram")
     args = parser.parse_args()
 
-    if args.live:
+    if args.replay_time:
+        kite = get_kite_client()
+        fut_info = resolve_nifty_near_month_future(kite)
+        fut_df = fetch_zerodha_5m_candles_with_oi(fut_info["instrument_token"], days=5, kite=kite, tradingsymbol=fut_info["tradingsymbol"])
+        target_mask = fut_df.index.astype(str).str.contains(args.replay_time)
+        if target_mask.any():
+            last_idx = fut_df.index[target_mask][-1]
+            f_slice = fut_df[fut_df.index <= last_idx]
+        else:
+            f_slice = fut_df
+        strike_val = args.strike or auto_select_atm_strike(float(f_slice["Open"].iloc[-1]), step=50)
+        s_info = resolve_atm_straddle_contracts(float(f_slice["Close"].iloc[-1]), kite=kite, strike_override=strike_val)
+        ce_df = fetch_zerodha_5m_candles_with_oi(s_info["ce_token"], days=5, kite=kite, tradingsymbol=s_info["ce_symbol"])
+        pe_df = fetch_zerodha_5m_candles_with_oi(s_info["pe_token"], days=5, kite=kite, tradingsymbol=s_info["pe_symbol"])
+        c_slice = ce_df[ce_df.index <= f_slice.index[-1]]
+        p_slice = pe_df[pe_df.index <= f_slice.index[-1]]
+        eval_res = evaluate_three_confirmations(
+            fut_df=f_slice, ce_df=c_slice, pe_df=p_slice,
+            futures_symbol=fut_info["tradingsymbol"],
+            atm_strike=s_info["atm_strike"], expiry_str=s_info["expiry"],
+            ce_symbol=s_info["ce_symbol"], pe_symbol=s_info["pe_symbol"]
+        )
+        print(f"[*] Replay Bar: {eval_res.get('bar_time')} | Alert Triggered: {eval_res.get('alert_triggered')}")
+        print(f"[*] Signal Rating: {eval_res.get('rating')}/10 | Agents Debate Rating: {eval_res.get('agents_debate_rating')}/10 ({eval_res.get('agents_debate_verdict')})")
+        print(f"[*] Debate Summary: {eval_res.get('agents_debate_summary')}")
+        if eval_res.get("alert_triggered") and args.force_send:
+            res = dispatch_three_confirmation_telegram_alert(eval_res, kite=kite)
+            print("\n" + "=" * 65)
+            print("TELEGRAM ALERT DISPATCHED:")
+            print("=" * 65)
+            print(res.get("sample_telegram_text"))
+            print("=" * 65)
+            print(f"Sent Status: {res.get('sent')} | Status: {res.get('status')}")
+    elif args.live:
         print("[*] Running live Zerodha 3-Confirmation Nifty Derivatives scan...")
         out = check_and_trigger_spot_index_breakout()
         print(out)
