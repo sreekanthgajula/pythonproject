@@ -149,6 +149,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                   : activeMode === 'past_week'
                   ? "Live Stock Race Ranked Strictly by Past Week's Positive % Price Gain (>0% 7-Day Growth)"
                   : "Live Stock Race Ranked Strictly by Monthly / Timeframe Positive % Price Gain (>0% Growth)"}
+                {lastUpdated && <span style={{ marginLeft: '10px', opacity: 0.7, fontSize: '0.8rem' }}>• Updated: {lastUpdated}</span>}
               </p>
             </div>
           </div>
@@ -182,7 +183,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
 
             <button
               className="btn-icon-secondary"
-              onClick={fetchRaceLeaderboard}
+              onClick={() => fetchRaceLeaderboard(activeMode)}
               title="Refresh Live Race Standings"
             >
               <RefreshCw size={18} className={loading ? 'spin-anim' : ''} />
@@ -214,7 +215,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
             <div className="podium-body">
               <div className="podium-symbol-row">
                 <span className="podium-symbol">{top2.symbol}</span>
-                <span className="exchange-tag">NSE</span>
+                <span className="exchange-tag">{top2.source_timeframe || 'NSE'}</span>
                 <span className="weekly-gain-badge pos">
                   📈 +{top2.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                 </span>
@@ -225,8 +226,12 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               </div>
               <div className="podium-stats">
                 <div className="podium-stat">
-                  <span>Recent High</span>
-                  <strong>₹{(top2.recent_high || 0).toFixed(2)}</strong>
+                  <span>Live Price</span>
+                  <strong style={{ color: '#10b981' }}>₹{(top2.ltp || top2.recent_high || 0).toFixed(2)}</strong>
+                </div>
+                <div className="podium-stat">
+                  <span>Base Price</span>
+                  <strong>₹{(top2.baseline_price || top2.prev_close || 0).toFixed(2)}</strong>
                 </div>
                 <div className="podium-stat">
                   <span>Trigger (+1%)</span>
@@ -254,7 +259,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
             <div className="podium-body">
               <div className="podium-symbol-row">
                 <span className="podium-symbol gold-title">{top1.symbol}</span>
-                <span className="exchange-tag gold-tag">LEADER</span>
+                <span className="exchange-tag gold-tag">{top1.source_timeframe || 'LEADER'}</span>
                 <span className="weekly-gain-badge pos">
                   📈 +{top1.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                 </span>
@@ -265,8 +270,12 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               </div>
               <div className="podium-stats">
                 <div className="podium-stat">
-                  <span>Recent High</span>
-                  <strong>₹{(top1.recent_high || 0).toFixed(2)}</strong>
+                  <span>Live Price</span>
+                  <strong style={{ color: '#10b981' }}>₹{(top1.ltp || top1.recent_high || 0).toFixed(2)}</strong>
+                </div>
+                <div className="podium-stat">
+                  <span>Base Price</span>
+                  <strong>₹{(top1.baseline_price || top1.prev_close || 0).toFixed(2)}</strong>
                 </div>
                 <div className="podium-stat">
                   <span>Trigger (+1%)</span>
@@ -290,7 +299,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
             <div className="podium-body">
               <div className="podium-symbol-row">
                 <span className="podium-symbol">{top3.symbol}</span>
-                <span className="exchange-tag">NSE</span>
+                <span className="exchange-tag">{top3.source_timeframe || 'NSE'}</span>
                 <span className="weekly-gain-badge pos">
                   📈 +{top3.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                 </span>
@@ -301,8 +310,12 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               </div>
               <div className="podium-stats">
                 <div className="podium-stat">
-                  <span>Recent High</span>
-                  <strong>₹{(top3.recent_high || 0).toFixed(2)}</strong>
+                  <span>Live Price</span>
+                  <strong style={{ color: '#10b981' }}>₹{(top3.ltp || top3.recent_high || 0).toFixed(2)}</strong>
+                </div>
+                <div className="podium-stat">
+                  <span>Base Price</span>
+                  <strong>₹{(top3.baseline_price || top3.prev_close || 0).toFixed(2)}</strong>
                 </div>
                 <div className="podium-stat">
                   <span>Trigger (+1%)</span>
@@ -363,11 +376,16 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                   <div className="race-info-cell">
                     <div className="race-sym-line">
                       <span className="ticker-symbol">{stock.symbol}</span>
-                      <span className="timeframe-tag">{stock.timeframe}</span>
+                      <span className="timeframe-tag">{stock.source_timeframe || stock.timeframe}</span>
                       <span className="weekly-gain-badge pos">
                         📈 +{stock.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                       </span>
-                      <span className="price-tag">High: ₹{(stock.recent_high || 0).toFixed(2)}</span>
+                      <span className="price-tag" style={{ color: '#10b981', fontWeight: 600 }}>
+                        LTP: ₹{(stock.ltp || stock.recent_high || 0).toFixed(2)}
+                      </span>
+                      <span className="price-tag">
+                        Base: ₹{(stock.baseline_price || stock.prev_close || 0).toFixed(2)}
+                      </span>
                       <span className="trigger-tag">Trigger: ₹{(stock.alert_trigger_price || 0).toFixed(2)}</span>
                     </div>
 

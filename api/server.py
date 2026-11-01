@@ -109,7 +109,7 @@ def _get_stock_returns_cached(stock_symbols: list) -> dict:
                             q_prev = float((q.get("ohlc") or {}).get("close") or 0.0)
                             if ltp > 0:
                                 base = returns_map.get(s, {})
-                                prev_c = q_prev if (q_prev > 0 and q_prev != ltp) else float(base.get("prev_close") or q_prev or 0.0)
+                                prev_c = q_prev if q_prev > 0 else float(base.get("prev_close") or 0.0)
                                 wk_c = float(base.get("week_ago_close") or 0.0)
                                 mo_c = float(base.get("month_ago_close") or 0.0)
                                 daily_pct = round(((ltp - prev_c) / prev_c) * 100.0, 2) if prev_c > 0 else float(base.get("daily_change_pct") or 0.0)
@@ -119,7 +119,10 @@ def _get_stock_returns_cached(stock_symbols: list) -> dict:
                                     "daily_change_pct": daily_pct,
                                     "weekly_change_pct": weekly_pct,
                                     "monthly_change_pct": monthly_pct,
-                                    "ltp": ltp
+                                    "ltp": ltp,
+                                    "prev_close": prev_c,
+                                    "week_ago_close": wk_c,
+                                    "month_ago_close": mo_c,
                                 }
                 except Exception:
                     continue
@@ -629,6 +632,23 @@ def run_paper_trading_loop():
         time.sleep(300)
 
 
+def run_stock_returns_sync_loop():
+    """
+    Background daemon thread that automatically syncs historical daily closes
+    (prev_close, week_ago_close, month_ago_close) for all tracked stocks
+    from Zerodha Kite Connect to ensure Stock Race Standings are 100% accurate.
+    Runs every 2 hours.
+    """
+    time.sleep(20)
+    while True:
+        try:
+            from scripts.sync_stock_returns_cache import sync_stock_returns_cache
+            res = sync_stock_returns_cache(force=False)
+            print(f"[RACE-SYNC-LOOP] Stock returns cache sync completed: {res.get('synced_count', 0)} stocks updated.")
+        except Exception as e:
+            print(f"[RACE-SYNC-LOOP] Error syncing stock returns cache: {e}")
+        time.sleep(7200)
+
 @app.on_event("startup")
 def startup_event():
     # Start the daily Zerodha connection check loop in a daemon thread
@@ -636,6 +656,9 @@ def startup_event():
     threading.Thread(target=monitor_watchlist, daemon=True).start()
     # Start automatic GTT next alert integrity audit loop on server startup
     threading.Thread(target=run_gtt_audit_loop, daemon=True).start()
+    # Start stock returns cache background sync loop for Daily, Weekly, Monthly Race
+    threading.Thread(target=run_stock_returns_sync_loop, daemon=True).start()
+    print("[RACE-SYNC-LOOP] Stock returns cache background sync loop started.")
     # Start automated 5-minute derivatives options pressure alert loop
     threading.Thread(target=run_derivatives_alert_monitor_loop, daemon=True).start()
     print("[DERIVATIVES-LOOP] Automated 5-minute options pressure alert monitor loop started.")
@@ -1929,6 +1952,11 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             item["daily_change_pct"] = daily_gain
             item["weekly_change_pct"] = weekly_gain
             item["monthly_change_pct"] = monthly_gain
+            item["ltp"] = float(ret.get("ltp") or item.get("recent_high") or 0.0)
+            item["prev_close"] = float(ret.get("prev_close") or 0.0)
+            item["week_ago_close"] = float(ret.get("week_ago_close") or 0.0)
+            item["month_ago_close"] = float(ret.get("month_ago_close") or 0.0)
+            item["source_timeframe"] = item.get("timeframe", "MONTHLY")
 
             # Select the exact timeframe's percentage change:
             # - Daily tab (today_only=True): strictly current day % increase (daily_gain > 0)
@@ -1936,15 +1964,19 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             # - Monthly tab (default): strictly past month % increase (monthly_gain > 0)
             if today_only:
                 target_pct = daily_gain
-                item["timeframe"] = "DAILY"
+                item["race_mode"] = "DAILY"
+                item["baseline_price"] = item["prev_close"]
             elif past_week_only:
                 target_pct = weekly_gain
-                item["timeframe"] = "WEEKLY"
+                item["race_mode"] = "WEEKLY"
+                item["baseline_price"] = item["week_ago_close"]
             else:
                 target_pct = monthly_gain
-                item["timeframe"] = "MONTHLY"
+                item["race_mode"] = "MONTHLY"
+                item["baseline_price"] = item["month_ago_close"]
 
             item["positive_change_pct"] = target_pct
+            item["pctGain"] = target_pct
 
             # Strictly include ONLY stocks that increased (> 0%) in the selected period
             if target_pct <= 0:
