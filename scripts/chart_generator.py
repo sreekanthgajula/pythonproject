@@ -851,14 +851,31 @@ def send_telegram_chart_alert(
 
     clean_sym = symbol.strip().upper().replace(".NS", "")
 
+    # Automatically run 6-Agent Swarm Debate if not already evaluated in message_text
+    debate_rating_val = None
+    if "Agents Debate" not in message_text:
+        try:
+            from scripts.agents_debate_swarm import run_swarm_agents_debate, format_swarm_debate_telegram_block
+            debate_info = run_swarm_agents_debate(
+                symbol=clean_sym,
+                trigger_price=trigger_price
+            )
+            debate_block = format_swarm_debate_telegram_block(debate_info)
+            debate_rating_val = debate_info.get("agents_debate_rating")
+            message_text = f"{message_text}\n\n{debate_block}"
+        except Exception as deb_err:
+            logger.debug(f"Swarm debate auto-eval note for {clean_sym}: {deb_err}")
+
     # 1. Obtain or generate the in-memory chart buffer
     buf = chart_buffer
     if buf is None:
         try:
+            title_suf = f" • Agents Debate {debate_rating_val}/10" if debate_rating_val else ""
             buf = generate_5min_chart_buffer(
                 symbol=clean_sym,
                 trigger_price=trigger_price,
-                kite=kite
+                kite=kite,
+                title_suffix=title_suf
             )
         except Exception as e:
             logger.error(f"Failed to generate chart buffer for Telegram alert: {e}")

@@ -445,43 +445,15 @@ def send_alert(
             except Exception as chart_err:
                 logger.debug(f"Could not generate in-memory 5m chart: {chart_err}")
 
-            if chart_buf is not None and len(chart_buf.getvalue()) > 0:
-                tg_url = f"https://api.telegram.org/bot{telegram_token}/sendPhoto"
-                tg_files = {
-                    "photo": (f"{ticker}_5m_breakout.png", chart_buf.getvalue(), "image/png")
-                }
-                tg_payload = {
-                    "chat_id": telegram_chat_id,
-                    "caption": tg_text,
-                    "parse_mode": "Markdown"
-                }
-                tg_resp = requests.post(tg_url, data=tg_payload, files=tg_files, timeout=15)
-            elif image_path and os.path.exists(image_path):
-                tg_url = f"https://api.telegram.org/bot{telegram_token}/sendPhoto"
-                with open(image_path, "rb") as photo_file:
-                    tg_files = {
-                        "photo": (os.path.basename(image_path), photo_file, "image/png")
-                    }
-                    tg_payload = {
-                        "chat_id": telegram_chat_id,
-                        "caption": tg_text,
-                        "parse_mode": "Markdown"
-                    }
-                    tg_resp = requests.post(tg_url, data=tg_payload, files=tg_files, timeout=15)
-            else:
-                tg_url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-                tg_payload = {
-                    "chat_id": telegram_chat_id,
-                    "text": tg_text,
-                    "parse_mode": "Markdown"
-                }
-                tg_resp = requests.post(tg_url, json=tg_payload, timeout=10)
-
-            if tg_resp.status_code == 200:
-                logger.info(f"Successfully sent Telegram alert for {ticker} at {timestamp}.")
-                telegram_sent = True
-            else:
-                logger.error(f"Failed to send Telegram alert. Status: {tg_resp.status_code}, Body: {tg_resp.text}")
+            from scripts.chart_generator import send_telegram_chart_alert
+            dispatch_res = send_telegram_chart_alert(
+                symbol=ticker,
+                message_text=tg_text,
+                chart_buffer=chart_buf,
+                trigger_price=price,
+                parse_mode="Markdown"
+            )
+            telegram_sent = bool(dispatch_res.get("sent"))
         except Exception as e:
             logger.error(f"Exception while dispatching Telegram alert: {e}")
     else:

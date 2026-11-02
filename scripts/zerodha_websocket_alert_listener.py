@@ -388,6 +388,28 @@ class ZerodhaWebSocketAlertEngine:
                 )
                 
                 from scripts.chart_generator import send_telegram_chart_alert, generate_5min_chart_buffer
+                from scripts.agents_debate_swarm import run_swarm_agents_debate, format_swarm_debate_telegram_block
+
+                # 2. Run 6-Agent Quantitative Swarm Debate on the Darvas Setup
+                debate_res = {}
+                try:
+                    debate_res = run_swarm_agents_debate(
+                        symbol=symbol,
+                        setup_type="DARVAS_BREAKOUT",
+                        current_price=current_price,
+                        trigger_price=trigger_price,
+                        meta={
+                            "volume_surge_ratio": vol_ratio,
+                            "close_strength_pct": close_strength,
+                            "recent_high": box_top,
+                            "box_bottom": box_bottom
+                        }
+                    )
+                    debate_block = format_swarm_debate_telegram_block(debate_res)
+                    tg_text += f"\n\n{debate_block}"
+                    logger.info(f"Swarm Debate for {symbol}: Rating={debate_res.get('agents_debate_rating')}/10 | Verdict={debate_res.get('agents_debate_verdict')}")
+                except Exception as deb_err:
+                    logger.warning(f"Swarm debate evaluation note for {symbol}: {deb_err}")
 
                 # Append 5-min buyer analysis details if available
                 buyer_score = buyer_analysis.get("score_out_of_10")
@@ -396,18 +418,18 @@ class ZerodhaWebSocketAlertEngine:
                     c_vol = "✅ High" if c.get("volume_spike") else "Normal"
                     c_candle = "✅ Bullish" if c.get("bullish_candle") else "Neutral"
                     tg_text += (
-                        f"\n\n📊 <b>5m Buyer Volume Engine</b>:\n"
-                        f"• Rating: <b>{buyer_score}/10</b>\n"
-                        f"• Candle: <b>{c_candle}</b> | Volume Spike: <b>{c_vol}</b>"
+                        f"\n📊 <b>5m Buyer Volume Engine</b>:\n"
+                        f"• Rating: <b>{buyer_score}/10</b> | Candle: <b>{c_candle}</b> | Volume: <b>{c_vol}</b>"
                     )
 
                 # Generate 5m Candlestick + Volume + OBV + True Strength (TSI) chart
                 chart_buf = None
+                deb_rating_str = f" • Agents Debate {debate_res.get('agents_debate_rating')}/10" if debate_res.get("agents_debate_rating") else ""
                 try:
                     chart_buf = generate_5min_chart_buffer(
                         symbol=symbol,
                         trigger_price=trigger_price,
-                        title_suffix=f" • Darvas Breakout • Volume Surge {vol_ratio:.1f}x"
+                        title_suffix=f" • Darvas Breakout{deb_rating_str}"
                     )
                 except Exception as c_err:
                     logger.warning(f"Error generating 5m chart for {symbol}: {c_err}")
