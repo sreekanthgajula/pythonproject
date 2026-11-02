@@ -1914,8 +1914,8 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
         dm = DataManager()
         stocks_map = {}
 
-        # Search monthly, weekly, daily, manual collections for records with alert activity
-        for tf in ["monthly", "weekly", "daily", "manual"]:
+        # Search darvas, monthly, weekly, daily, manual collections for records with alert activity
+        for tf in ["darvas", "monthly", "weekly", "daily", "manual"]:
             try:
                 col = dm.db[tf]
                 docs = list(col.find({}))
@@ -1925,10 +1925,10 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
                         continue
                     
                     alert_cnt = int(doc.get("alert_count") or 0)
-                    recent_high = float(doc.get("recent_high") or 0.0)
+                    recent_high = float(doc.get("recent_high") or doc.get("box_top") or 0.0)
                     trigger_price = float(doc.get("alert_trigger_price") or (recent_high * 1.01))
-                    rating = float(doc.get("rating") or 4.0)
-                    reason = doc.get("reason") or "Strong breakout setup"
+                    rating = float(doc.get("rating") or doc.get("darvas_score") or 4.0)
+                    reason = doc.get("reason") or ("Darvas Box Breakout setup" if tf == "darvas" else "Strong breakout setup")
                     alert_status = doc.get("alert_status") or "LOCAL_ALERT_SET"
                     gtt_id = doc.get("gtt_id")
                     
@@ -1981,6 +1981,20 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             except Exception as tf_err:
                 print(f"[RACE API] Error fetching {tf} table: {tf_err}")
 
+        # Fetch qualified Darvas Box stocks to cross-link with Stock Race
+        darvas_docs = list(dm.db["darvas"].find({}))
+        darvas_map = {
+            (d.get("symbol") or "").upper().replace(".NS", "").replace("-EQ", ""): d
+            for d in darvas_docs if d.get("symbol")
+        }
+
+        # Check Zerodha WebSocket live streaming ticks for real-time tick integration
+        try:
+            from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+            ws_ticks = ws_alert_engine.get_latest_ticks()
+        except Exception:
+            ws_ticks = {}
+
         # Compute real Zerodha daily, weekly, and monthly percentage returns for all stocks
         returns_map = _get_stock_returns_cached(list(stocks_map.keys()))
 
@@ -1999,6 +2013,30 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             item["week_ago_close"] = float(ret.get("week_ago_close") or 0.0)
             item["month_ago_close"] = float(ret.get("month_ago_close") or 0.0)
             item["source_timeframe"] = item.get("timeframe", "MONTHLY")
+
+            # Integrate live streaming WebSocket tick if fresher than cache
+            ws_tick = ws_ticks.get(sym)
+            if ws_tick and float(ws_tick.get("ltp") or 0.0) > 0:
+                live_ltp = float(ws_tick["ltp"])
+                item["ltp"] = live_ltp
+                if item.get("prev_close", 0) > 0:
+                    daily_gain = round(((live_ltp - item["prev_close"]) / item["prev_close"]) * 100.0, 2)
+                    item["daily_change_pct"] = daily_gain
+                if item.get("week_ago_close", 0) > 0:
+                    weekly_gain = round(((live_ltp - item["week_ago_close"]) / item["week_ago_close"]) * 100.0, 2)
+                    item["weekly_change_pct"] = weekly_gain
+                if item.get("month_ago_close", 0) > 0:
+                    monthly_gain = round(((live_ltp - item["month_ago_close"]) / item["month_ago_close"]) * 100.0, 2)
+                    item["monthly_change_pct"] = monthly_gain
+
+            # Cross-link Darvas Box Breakout setup information
+            d_doc = darvas_map.get(sym)
+            item["is_darvas"] = d_doc is not None
+            if d_doc:
+                item["darvas_score"] = float(d_doc.get("darvas_score") or d_doc.get("darvas_pillar_score") or 0.0)
+                item["box_top"] = float(d_doc.get("box_top") or 0.0)
+                item["box_bottom"] = float(d_doc.get("box_bottom") or 0.0)
+                item["is_darvas_breakout"] = bool(d_doc.get("is_breaking_out"))
 
             # Select the exact timeframe's percentage change:
             # - Daily tab (today_only=True): strictly current day % increase (daily_gain > 0)
@@ -2054,6 +2092,16 @@ def get_todays_stock_alert_race():
 def get_past_week_stock_alert_race():
     """Returns Stock Alert Race leaderboard strictly considering stocks that INCREASED over the past week."""
     return get_daily_stock_alert_race(past_week_only=True)
+
+@app.get("/api/race/ticks")
+def get_live_race_ticks():
+    """Returns the latest real-time WebSocket tick prices for all racing stocks."""
+    try:
+        from scripts.zerodha_websocket_alert_listener import ws_alert_engine
+        ticks = ws_alert_engine.get_latest_ticks()
+        return {"status": "success", "count": len(ticks), "ticks": ticks}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "ticks": {}}
 
 @app.post("/api/pipeline/run")
 def trigger_chartink_grok_pipeline(req: PipelineRunRequest, background_tasks: BackgroundTasks):

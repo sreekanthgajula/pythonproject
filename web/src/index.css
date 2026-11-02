@@ -1198,6 +1198,28 @@ body {
   border-radius: 4px;
 }
 
+.darvas-race-badge {
+  font-size: 0.68rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, rgba(234, 179, 8, 0.25), rgba(249, 115, 22, 0.25));
+  color: #facc15;
+  border: 1px solid rgba(250, 204, 21, 0.5);
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  box-shadow: 0 0 8px rgba(250, 204, 21, 0.2);
+}
+
+.darvas-race-badge.gold-darvas-badge {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.4), rgba(217, 119, 6, 0.4));
+  border-color: #fbbf24;
+  color: #fffbeb;
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.4);
+}
+
 .price-tag,
 .trigger-tag {
   font-size: 0.75rem;

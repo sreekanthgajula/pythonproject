@@ -83,6 +83,53 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
     return () => clearInterval(interval);
   }, [activeMode]);
 
+  // Live WebSocket Tick updater for real-time race animations
+  useEffect(() => {
+    const fetchTicks = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/race/ticks`);
+        if (res.ok) {
+          const json = await res.json();
+          const ticks = json.ticks || {};
+          if (Object.keys(ticks).length > 0) {
+            setRaceData((prev) => {
+              if (!prev || prev.length === 0) return prev;
+              let hasChange = false;
+              const updated = prev.map((item) => {
+                const tick = ticks[item.symbol];
+                if (tick && tick.ltp && tick.ltp !== item.ltp) {
+                  hasChange = true;
+                  const newLtp = Number(tick.ltp);
+                  let newPct = item.pctGain;
+                  const basePrice = item.baseline_price || item.prev_close || 0;
+                  if (basePrice > 0) {
+                    newPct = Number((((newLtp - basePrice) / basePrice) * 100).toFixed(2));
+                  }
+                  return {
+                    ...item,
+                    ltp: newLtp,
+                    pctGain: newPct,
+                    positive_change_pct: newPct,
+                    daily_change_pct: activeModeRef.current === 'today' ? newPct : item.daily_change_pct,
+                    weekly_change_pct: activeModeRef.current === 'past_week' ? newPct : item.weekly_change_pct,
+                    monthly_change_pct: activeModeRef.current === 'all' ? newPct : item.monthly_change_pct,
+                  };
+                }
+                return item;
+              });
+              if (!hasChange) return prev;
+              return [...updated].sort((a, b) => (b.pctGain || 0) - (a.pctGain || 0)).map((s, idx) => ({ ...s, rank: idx + 1 }));
+            });
+          }
+        }
+      } catch (e) {
+        // Silent background tick handling
+      }
+    };
+    const tickInterval = setInterval(fetchTicks, 3000);
+    return () => clearInterval(tickInterval);
+  }, []);
+
   const getStockChangePct = (stock) => {
     if (activeMode === 'today') {
       return stock.daily_change_pct !== undefined ? stock.daily_change_pct : (stock.positive_change_pct || 0);
@@ -216,6 +263,11 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               <div className="podium-symbol-row">
                 <span className="podium-symbol">{top2.symbol}</span>
                 <span className="exchange-tag">{top2.source_timeframe || 'NSE'}</span>
+                {top2.is_darvas && (
+                  <span className="darvas-race-badge" title={`Qualified Darvas Box Breakout (Pillar Score: ${top2.darvas_score || 0})`}>
+                    📦 DARVAS
+                  </span>
+                )}
                 <span className="weekly-gain-badge pos">
                   📈 +{top2.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                 </span>
@@ -260,6 +312,11 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               <div className="podium-symbol-row">
                 <span className="podium-symbol gold-title">{top1.symbol}</span>
                 <span className="exchange-tag gold-tag">{top1.source_timeframe || 'LEADER'}</span>
+                {top1.is_darvas && (
+                  <span className="darvas-race-badge gold-darvas-badge" title={`Qualified Darvas Box Breakout (Pillar Score: ${top1.darvas_score || 0})`}>
+                    📦 DARVAS
+                  </span>
+                )}
                 <span className="weekly-gain-badge pos">
                   📈 +{top1.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                 </span>
@@ -300,6 +357,11 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               <div className="podium-symbol-row">
                 <span className="podium-symbol">{top3.symbol}</span>
                 <span className="exchange-tag">{top3.source_timeframe || 'NSE'}</span>
+                {top3.is_darvas && (
+                  <span className="darvas-race-badge" title={`Qualified Darvas Box Breakout (Pillar Score: ${top3.darvas_score || 0})`}>
+                    📦 DARVAS
+                  </span>
+                )}
                 <span className="weekly-gain-badge pos">
                   📈 +{top3.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                 </span>
@@ -377,6 +439,11 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                     <div className="race-sym-line">
                       <span className="ticker-symbol">{stock.symbol}</span>
                       <span className="timeframe-tag">{stock.source_timeframe || stock.timeframe}</span>
+                      {stock.is_darvas && (
+                        <span className="darvas-race-badge" title={`Qualified Darvas Box Breakout (Pillar Score: ${stock.darvas_score || 0})`}>
+                          📦 DARVAS
+                        </span>
+                      )}
                       <span className="weekly-gain-badge pos">
                         📈 +{stock.pctGain.toFixed(2)}% ({getTimeframeLabel()})
                       </span>

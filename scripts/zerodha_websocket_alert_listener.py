@@ -53,6 +53,7 @@ class ZerodhaWebSocketAlertEngine:
         self.kws = None
         self.token_map = {}          # instrument_token (int) -> dict metadata
         self.alerted_today = set()   # (symbol, date_str)
+        self.latest_ticks = {}       # symbol -> {"symbol": str, "ltp": float, "timestamp": float}
         self.is_running = False
         self._thread = None
         self.dm = None
@@ -121,6 +122,14 @@ class ZerodhaWebSocketAlertEngine:
             symbol = data["symbol"]
             trigger_price = data["alert_trigger_price"]
             last_price = float(tick.get("last_price", 0.0))
+
+            # Store the latest streaming tick for UI / Race Leaderboard real-time updates
+            if last_price > 0:
+                self.latest_ticks[symbol] = {
+                    "symbol": symbol,
+                    "ltp": last_price,
+                    "timestamp": time.time()
+                }
 
             # Check if live price crossed the +1% breakout trigger
             if last_price >= trigger_price:
@@ -378,7 +387,7 @@ class ZerodhaWebSocketAlertEngine:
                     f"📝 <i>{darvas_doc.get('reason', 'Confirmed Darvas Box Breakout')}</i>"
                 )
                 
-                from scripts.chart_generator import send_telegram_chart_alert
+                from scripts.chart_generator import send_telegram_chart_alert, generate_5min_chart_buffer
 
                 # Append 5-min buyer analysis details if available
                 buyer_score = buyer_analysis.get("score_out_of_10")
@@ -392,9 +401,21 @@ class ZerodhaWebSocketAlertEngine:
                         f"• Candle: <b>{c_candle}</b> | Volume Spike: <b>{c_vol}</b>"
                     )
 
+                # Generate 5m Candlestick + Volume + OBV + True Strength (TSI) chart
+                chart_buf = None
+                try:
+                    chart_buf = generate_5min_chart_buffer(
+                        symbol=symbol,
+                        trigger_price=trigger_price,
+                        title_suffix=f" • Darvas Breakout • Volume Surge {vol_ratio:.1f}x"
+                    )
+                except Exception as c_err:
+                    logger.warning(f"Error generating 5m chart for {symbol}: {c_err}")
+
                 res = send_telegram_chart_alert(
                     symbol=symbol,
                     message_text=tg_text,
+                    chart_buffer=chart_buf,
                     trigger_price=trigger_price,
                     parse_mode="HTML"
                 )
@@ -467,6 +488,10 @@ class ZerodhaWebSocketAlertEngine:
                 pass
         self.is_running = False
         logger.info("Zerodha KiteTicker WebSocket Alert Engine stopped.")
+
+    def get_latest_ticks(self) -> dict:
+        """Returns the dictionary of the most recent streaming ticks received."""
+        return dict(self.latest_ticks)
 
 # Singleton instance
 ws_alert_engine = ZerodhaWebSocketAlertEngine()
