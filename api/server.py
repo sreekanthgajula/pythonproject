@@ -96,7 +96,7 @@ def _get_stock_returns_cached(stock_symbols: list) -> dict:
             from tradingagents.dataflows.zerodha import get_zerodha_credentials
             creds = get_zerodha_credentials()
             api_key = creds.get("api_key")
-            access_token = creds.get("access_token")
+            access_token = os.environ.get("ZERODHA_ACCESS_TOKEN") or creds.get("access_token")
             api_url = creds.get("api_url", "https://api.kite.trade")
             headers = {
                 "X-Kite-Version": "3",
@@ -122,9 +122,9 @@ def _get_stock_returns_cached(stock_symbols: list) -> dict:
                                 prev_c = q_prev if q_prev > 0 else float(base.get("prev_close") or 0.0)
                                 wk_c = float(base.get("week_ago_close") or 0.0)
                                 mo_c = float(base.get("month_ago_close") or 0.0)
-                                daily_pct = round(((ltp - prev_c) / prev_c) * 100.0, 2) if prev_c > 0 else float(base.get("daily_change_pct") or 0.0)
-                                weekly_pct = round(((ltp - wk_c) / wk_c) * 100.0, 2) if wk_c > 0 else float(base.get("weekly_change_pct") or 0.0)
-                                monthly_pct = round(((ltp - mo_c) / mo_c) * 100.0, 2) if mo_c > 0 else float(base.get("monthly_change_pct") or 0.0)
+                                daily_pct = round(((ltp - prev_c) / prev_c) * 100.0, 2) if (prev_c > 0 and ltp > 0) else float(base.get("daily_change_pct") or 0.0)
+                                weekly_pct = round(((ltp - wk_c) / wk_c) * 100.0, 2) if (wk_c > 0 and ltp > 0) else float(base.get("weekly_change_pct") or 0.0)
+                                monthly_pct = round(((ltp - mo_c) / mo_c) * 100.0, 2) if (mo_c > 0 and ltp > 0) else float(base.get("monthly_change_pct") or 0.0)
                                 returns_map[s] = {
                                     "daily_change_pct": daily_pct,
                                     "weekly_change_pct": weekly_pct,

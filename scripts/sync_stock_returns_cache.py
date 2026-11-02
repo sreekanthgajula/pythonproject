@@ -82,15 +82,15 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
 
     # 3. Batch fetch live quotes first (to get live LTP and today's close if active)
     quotes = {}
-    try:
-        for i in range(0, len(clean_symbols), 200):
-            batch = clean_symbols[i:i + 200]
+    for i in range(0, len(clean_symbols), 200):
+        batch = clean_symbols[i:i + 200]
+        try:
             q_chunk = kite.quote([f"NSE:{s}" for s in batch])
             for k, v in q_chunk.items():
                 s = k.replace("NSE:", "").replace("BSE:", "")
                 quotes[s] = v
-    except Exception as qe:
-        logger.warning(f"Failed to fetch batch quotes: {qe}")
+        except Exception as qe:
+            logger.warning(f"Failed to fetch batch quotes for chunk {i}: {qe}")
 
     synced_records = []
     failed_symbols = []
@@ -116,6 +116,8 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
             or existing.get("date") != today_str
             or float(existing.get("week_ago_close") or 0.0) <= 0
             or float(existing.get("month_ago_close") or 0.0) <= 0
+            or float(existing.get("prev_close") or 0.0) <= 0
+            or float(existing.get("ltp") or 0.0) <= 0
         )
 
         prev_close = q_prev
@@ -139,11 +141,15 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
                     if last_c_date == today_str and len(candles) >= 3:
                         # Today's incomplete candle
                         prev_close = float(candles[-2]["close"])
+                        if ltp <= 0:
+                            ltp = float(candles[-1]["close"])
                         week_idx = -7 if len(candles) >= 7 else 0
                         month_idx = -23 if len(candles) >= 23 else 0
                     else:
                         # Completed day or weekend
                         prev_close = float(candles[-2]["close"]) if len(candles) >= 2 else float(candles[-1]["close"])
+                        if ltp <= 0:
+                            ltp = float(candles[-1]["close"])
                         week_idx = -6 if len(candles) >= 6 else 0
                         month_idx = -22 if len(candles) >= 22 else 0
 
@@ -151,21 +157,36 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
                     month_ago_close = float(candles[month_idx]["close"])
                 elif candles:
                     prev_close = float(candles[-1]["close"])
+                    if ltp <= 0:
+                        ltp = prev_close
                     week_ago_close = prev_close
                     month_ago_close = prev_close
             except Exception as he:
                 logger.warning(f"Failed historical fetch for {sym} (token {token}): {he}")
                 failed_symbols.append(sym)
 
-        # Fallback for prev_close if still zero
+        # Fallback to existing valid cached values if quotes or candles lacked them
         if prev_close <= 0 and q_prev > 0:
             prev_close = q_prev
+        if prev_close <= 0 and existing and float(existing.get("prev_close") or 0.0) > 0:
+            prev_close = float(existing["prev_close"])
+        if ltp <= 0 and existing and float(existing.get("ltp") or 0.0) > 0:
+            ltp = float(existing["ltp"])
         if ltp <= 0 and prev_close > 0:
             ltp = prev_close
+        if week_ago_close <= 0 and existing and float(existing.get("week_ago_close") or 0.0) > 0:
+            week_ago_close = float(existing["week_ago_close"])
         if week_ago_close <= 0:
             week_ago_close = prev_close
+        if month_ago_close <= 0 and existing and float(existing.get("month_ago_close") or 0.0) > 0:
+            month_ago_close = float(existing["month_ago_close"])
         if month_ago_close <= 0:
             month_ago_close = week_ago_close
+
+        # Guard: Never write bogus 0.0 prices that corrupt returns to -100%
+        if ltp <= 0 or prev_close <= 0:
+            logger.warning(f"Skipping cache update for {sym}: price not available (ltp={ltp}, prev_close={prev_close})")
+            continue
 
         # Compute percentage returns
         daily_pct = round(((ltp - prev_close) / prev_close) * 100.0, 2) if prev_close > 0 else 0.0

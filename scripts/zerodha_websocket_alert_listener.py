@@ -30,6 +30,7 @@ sys.path.append(str(project_root))
 from data_manager import DataManager
 from tradingagents.dataflows.zerodha import get_instrument_token, get_zerodha_credentials
 from tradingagents.dataflows.symbol_utils import normalize_symbol
+from tradingagents.market_timing import get_now_ist, format_alert_dual_timestamp
 
 # Try importing KiteConnect & KiteTicker
 try:
@@ -264,16 +265,19 @@ class ZerodhaWebSocketAlertEngine:
         Records alert in active alerts list, increments DB alert_count, dispatches notifications,
         and automatically advances alert_trigger_price to 1% above the newly alerted price (current_price * 1.01).
         """
+        tf = meta.get("timeframe", "monthly").strip().lower()
+        is_darvas = (tf == "darvas")
+        # For Darvas Box breakouts, require at least +2.5% expansion for next ladder step to prevent spam
+        ladder_step = 1.025 if is_darvas else 1.01
         new_recent_high = round(current_price, 2)
-        new_trigger_price = round(current_price * 1.01, 2)
+        new_trigger_price = round(current_price * ladder_step, 2)
 
-        # 0. Increment alert_count and advance trigger_price to +1% above current alerted price in MongoDB
+        # 0. Increment alert_count and advance trigger_price in MongoDB
+        today_count = 1
         if self.dm:
             try:
-                tf = meta.get("timeframe", "monthly").strip().lower()
                 col = self.dm.db[tf]
-                ist_tz = timezone(timedelta(hours=5, minutes=30))
-                now_ist = datetime.now(ist_tz)
+                now_ist = get_now_ist()
                 today_str = now_ist.strftime("%Y-%m-%d")
                 
                 doc = col.find_one({"symbol": symbol.upper()})
@@ -281,9 +285,10 @@ class ZerodhaWebSocketAlertEngine:
                 was_today = False
                 if isinstance(last_alerted, datetime):
                     if last_alerted.tzinfo is None:
+                        ist_tz = timezone(timedelta(hours=5, minutes=30))
                         last_alerted_ist = last_alerted.replace(tzinfo=timezone.utc).astimezone(ist_tz)
                     else:
-                        last_alerted_ist = last_alerted.astimezone(ist_tz)
+                        last_alerted_ist = last_alerted.astimezone(now_ist.tzinfo)
                     was_today = (last_alerted_ist.strftime("%Y-%m-%d") == today_str)
 
                 today_count = (doc.get("today_alert_count", 0) + 1) if (was_today and doc) else 1
@@ -300,7 +305,8 @@ class ZerodhaWebSocketAlertEngine:
                         }
                     }
                 )
-                logger.info(f"📈 [TRAILING 1% LADDER] {symbol} ({tf}): Alerted at ₹{current_price:.2f}. Advanced Next Trigger to ₹{new_trigger_price:.2f} (+1%). Today's Alerts: {today_count}, Total: Incremented.")
+                step_pct_label = "+2.5%" if is_darvas else "+1.0%"
+                logger.info(f"📈 [TRAILING {step_pct_label} LADDER] {symbol} ({tf}): Alerted at ₹{current_price:.2f}. Advanced Next Trigger to ₹{new_trigger_price:.2f}. Today's Alerts: {today_count}, Total: Incremented.")
             except Exception as db_inc_err:
                 logger.error(f"Failed to update trailing alert data for {symbol}: {db_inc_err}")
 
@@ -347,20 +353,28 @@ class ZerodhaWebSocketAlertEngine:
                     logger.info(f"⏭️ [TELEGRAM DARVAS FILTER] Skipped Telegram alert for {symbol}: {filter_msg}")
                     return
 
+                # Prevent excessive alert spam: max 3 alerts per stock per day for Darvas
+                if is_darvas and today_count > 3:
+                    logger.info(f"⏭️ [DARVAS DAILY LIMIT] Already sent {today_count - 1} alerts today for {symbol}. Skipping redundant alert.")
+                    return
+
                 _dm = DataManager()
                 darvas_doc = _dm.db["darvas"].find_one({"symbol": symbol}) or {}
                 box_top = darvas_doc.get("box_top") or meta.get("recent_high") or current_price
                 box_bottom = darvas_doc.get("box_bottom") or 0.0
                 vol_ratio = darvas_doc.get("volume_surge_ratio") or 1.5
                 close_strength = darvas_doc.get("close_strength_pct") or 80.0
+                nifty_regime = darvas_doc.get("nifty_regime") or "BULLISH_TAILWIND"
+                time_stamp = format_alert_dual_timestamp(get_now_ist())
 
                 tg_text = (
-                    f"⚡ <b>TRUE DARVAS BOX BREAKOUT ALERT</b> - <b>{symbol}</b>\n\n"
+                    f"⚡ <b>TRUE DARVAS BOX BREAKOUT ALERT</b> - <b>#{symbol}</b>\n\n"
                     f"📈 <b>Live Price</b>: ₹{current_price:,.2f} (Trigger: ₹{trigger_price:,.2f})\n"
                     f"📦 <b>Box Range</b>: [₹{box_bottom:,.2f} - ₹{box_top:,.2f}]\n"
                     f"🔥 <b>Volume Surge Ratio</b>: <b>{vol_ratio:.1f}x 20d Avg</b>\n"
                     f"💪 <b>Close Strength</b>: <b>{close_strength:.1f}%</b> of daily range\n"
-                    f"🎯 <b>Timeframe Source</b>: {meta.get('timeframe', 'DAILY').upper()}\n\n"
+                    f"🏛️ <b>Benchmark Regime</b>: <b>{nifty_regime}</b>\n"
+                    f"🕒 <b>{time_stamp}</b>\n\n"
                     f"📝 <i>{darvas_doc.get('reason', 'Confirmed Darvas Box Breakout')}</i>"
                 )
                 
