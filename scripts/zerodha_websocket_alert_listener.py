@@ -107,6 +107,24 @@ class ZerodhaWebSocketAlertEngine:
 
         logger.info(f"Loaded {len(target_map)} unique instrument targets for live WebSocket monitoring.")
         self.token_map = target_map
+
+        # Pre-populate alerted_today from DB so reboots don't cause duplicate alerts
+        try:
+            now_ist = get_now_ist()
+            today_ist_str = now_ist.strftime("%Y-%m-%d")
+            for tf_col in timeframes:
+                for doc in self.dm.db[tf_col].find({"today_alert_count": {"$gt": 0}}):
+                    sym_val = (doc.get("symbol") or "").upper().replace(".NS", "").replace("-EQ", "")
+                    last_at = doc.get("last_alerted_at")
+                    if sym_val and last_at:
+                        last_str = str(last_at)[:10]
+                        if last_str == today_ist_str:
+                            self.alerted_today.add((sym_val, today_ist_str))
+            if self.alerted_today:
+                logger.info(f"Pre-populated {len(self.alerted_today)} alerted stocks from today's DB records.")
+        except Exception as pre_err:
+            logger.debug(f"Pre-population note for alerted_today: {pre_err}")
+
         return target_map
 
     def _on_ticks(self, ws, ticks):
@@ -325,9 +343,8 @@ class ZerodhaWebSocketAlertEngine:
             self.token_map[token]["alert_trigger_price"] = new_trigger_price
 
         try:
-            # 1. Update API active_alerts list if API server is in scope
-            from api.server import active_alerts
-            active_alerts.append({
+            # 1. Update API active_alerts list and persist in MongoDB
+            alert_doc = {
                 "id": f"ws-{int(time.time())}-{symbol}",
                 "ticker": symbol,
                 "price": current_price,
@@ -335,7 +352,15 @@ class ZerodhaWebSocketAlertEngine:
                 "confidence": 0.95,
                 "reason": f"Live Zerodha KiteTicker tick (₹{current_price:.2f}) crossed +1% breakout trigger level (₹{trigger_price:.2f}). Grok Rating: {meta.get('rating', 4.0)}",
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
+            }
+            from api.server import active_alerts
+            active_alerts.append(alert_doc)
+            if self.dm and self.dm.db is not None:
+                self.dm.db["active_alerts"].update_one(
+                    {"id": alert_doc["id"]},
+                    {"$set": alert_doc},
+                    upsert=True
+                )
         except Exception:
             pass
 

@@ -1,6 +1,13 @@
 import sys
 import os
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Crucial: Set matplotlib headless backend before any other module imports to prevent Tkinter thread deadlock on Windows
 import matplotlib
 matplotlib.use("Agg")
@@ -51,9 +58,33 @@ app.add_middleware(
 # In-memory store for analysis jobs
 jobs: Dict[str, dict] = {}
 
-# Watchlist & Active Alerts storage
-watchlist = {"RELIANCE.NS"}
-active_alerts = []
+def _get_persistent_watchlist() -> set:
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        if dm.db is not None:
+            docs = list(dm.db["user_watchlist"].find({}, {"ticker": 1}))
+            if docs:
+                return {d["ticker"] for d in docs if d.get("ticker")}
+    except Exception:
+        pass
+    return {"RELIANCE.NS"}
+
+def _get_persistent_alerts() -> list:
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        if dm.db is not None:
+            docs = list(dm.db["active_alerts"].find({}, {"_id": 0}).sort("created_at", -1).limit(100))
+            if docs:
+                return docs
+    except Exception:
+        pass
+    return []
+
+# Watchlist & Active Alerts storage (backed by MongoDB persistence across restarts)
+watchlist = _get_persistent_watchlist()
+active_alerts = _get_persistent_alerts()
 last_alerted_candle = {}
 telegram_sent_set = set()
 
@@ -778,6 +809,17 @@ def add_to_watchlist(req: WatchlistRequest):
     if not ticker_clean:
         raise HTTPException(status_code=400, detail="Invalid ticker name")
     watchlist.add(ticker_clean)
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        if dm.db is not None:
+            dm.db["user_watchlist"].update_one(
+                {"ticker": ticker_clean},
+                {"$set": {"ticker": ticker_clean, "updated_at": datetime.datetime.now()}},
+                upsert=True
+            )
+    except Exception:
+        pass
     return {"status": "success", "watchlist": list(watchlist)}
 
 @app.post("/api/watchlist/remove")
@@ -785,15 +827,30 @@ def remove_from_watchlist(req: WatchlistRequest):
     ticker_clean = req.ticker.strip().upper()
     if ticker_clean in watchlist:
         watchlist.remove(ticker_clean)
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        if dm.db is not None:
+            dm.db["user_watchlist"].delete_one({"ticker": ticker_clean})
+    except Exception:
+        pass
     return {"status": "success", "watchlist": list(watchlist)}
 
 @app.get("/api/alerts")
 def get_alerts():
-    return active_alerts
+    db_alts = _get_persistent_alerts()
+    return db_alts if db_alts else active_alerts
 
 @app.post("/api/alerts/clear")
 def clear_alerts():
     active_alerts.clear()
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        if dm.db is not None:
+            dm.db["active_alerts"].delete_many({})
+    except Exception:
+        pass
     return {"status": "success", "alerts": []}
 
 class TotpRequest(BaseModel):
