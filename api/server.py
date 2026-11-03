@@ -70,12 +70,17 @@ def _get_persistent_watchlist() -> set:
         pass
     return {"RELIANCE.NS"}
 
-def _get_persistent_alerts() -> list:
+def _get_persistent_alerts(today_only: bool = True) -> list:
     try:
         from data_manager import DataManager
+        from tradingagents.market_timing import get_now_ist
         dm = DataManager()
         if dm.db is not None:
-            docs = list(dm.db["active_alerts"].find({}, {"_id": 0}).sort("created_at", -1).limit(100))
+            query = {}
+            if today_only:
+                today_ist_str = get_now_ist().strftime("%Y-%m-%d")
+                query["created_at"] = {"$regex": f"^{today_ist_str}"}
+            docs = list(dm.db["active_alerts"].find(query, {"_id": 0}).sort("created_at", -1).limit(100))
             if docs:
                 return docs
     except Exception:
@@ -837,9 +842,9 @@ def remove_from_watchlist(req: WatchlistRequest):
     return {"status": "success", "watchlist": list(watchlist)}
 
 @app.get("/api/alerts")
-def get_alerts():
-    db_alts = _get_persistent_alerts()
-    return db_alts if db_alts else active_alerts
+def get_alerts(today_only: bool = True):
+    db_alts = _get_persistent_alerts(today_only=today_only)
+    return db_alts if db_alts else []
 
 @app.post("/api/alerts/clear")
 def clear_alerts():
