@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -6,7 +6,6 @@ import {
   RefreshCw,
   Zap,
   CheckCircle2,
-  XCircle,
   Activity,
   Server,
   Radio,
@@ -17,16 +16,13 @@ import {
   BarChart2,
   Clock,
   Sparkles,
-  ArrowRight,
-  ChevronRight,
-  Filter,
   Search,
   Wrench,
   Terminal,
   Layers,
-  Flame,
-  Info
+  Flame
 } from 'lucide-react';
+import './IntegrityManager.css';
 
 const API_BASE_URL = '/api';
 
@@ -36,7 +32,7 @@ export default function IntegrityManager() {
   const [probing, setProbing] = useState(false);
   const [healingSubsystems, setHealingSubsystems] = useState({});
   const [healingAll, setHealingAll] = useState(false);
-  const [autoRefreshSecs, setAutoRefreshSecs] = useState(15); // 0, 10, 15, 30
+  const [autoRefreshSecs, setAutoRefreshSecs] = useState(15);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [searchFilter, setSearchFilter] = useState('');
   const [eventLogs, setEventLogs] = useState([]);
@@ -203,151 +199,115 @@ export default function IntegrityManager() {
   const getSubsystemIcon = (id, category) => {
     switch (id) {
       case 'zerodha_auth':
-        return <Server className="w-5 h-5 text-emerald-400" />;
+        return <Server size={18} color="#10b981" />;
       case 'websocket_stream':
-        return <Radio className="w-5 h-5 text-cyan-400" />;
+        return <Radio size={18} color="#38bdf8" />;
       case 'gtt_ladder':
-        return <Sliders className="w-5 h-5 text-indigo-400" />;
+        return <Sliders size={18} color="#818cf8" />;
       case 'swarm_debate_gate':
-        return <Cpu className="w-5 h-5 text-purple-400" />;
+        return <Cpu size={18} color="#c084fc" />;
       case 'race_returns_cache':
-        return <BarChart2 className="w-5 h-5 text-amber-400" />;
+        return <BarChart2 size={18} color="#fbbf24" />;
       case 'derivatives_engine':
-        return <Activity className="w-5 h-5 text-rose-400" />;
+        return <Activity size={18} color="#fb7185" />;
       case 'morning_short_engine':
-        return <Flame className="w-5 h-5 text-orange-400" />;
+        return <Flame size={18} color="#f97316" />;
       case 'evening_pro_engine':
-        return <Sparkles className="w-5 h-5 text-yellow-400" />;
+        return <Sparkles size={18} color="#facc15" />;
       case 'paper_trading':
-        return <Layers className="w-5 h-5 text-blue-400" />;
+        return <Layers size={18} color="#60a5fa" />;
       case 'mongodb_persistence':
-        return <Database className="w-5 h-5 text-emerald-300" />;
+        return <Database size={18} color="#34d399" />;
       case 'telegram_alerts':
-        return <Send className="w-5 h-5 text-sky-400" />;
+        return <Send size={18} color="#38bdf8" />;
       default:
-        return <ShieldCheck className="w-5 h-5 text-gray-400" />;
+        return <ShieldCheck size={18} color="#94a3b8" />;
     }
   };
 
   return (
-    <div className="space-y-6 text-gray-100">
+    <div className="integrity-container">
       {/* ACTION NOTICE TOAST */}
       {actionNotice && (
-        <div
-          className={`flex items-center justify-between p-4 rounded-xl border shadow-xl transition-all ${
-            actionNotice.type === 'success'
-              ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-200'
-              : 'bg-rose-950/80 border-rose-500/50 text-rose-200'
-          }`}
-        >
-          <div className="flex items-center space-x-3">
+        <div className={`integrity-notice ${actionNotice.type === 'success' ? 'notice-success' : 'notice-error'}`}>
+          <div className="notice-content">
             {actionNotice.type === 'success' ? (
-              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+              <CheckCircle2 size={18} color="#34d399" />
             ) : (
-              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
+              <AlertTriangle size={18} color="#fb7185" />
             )}
-            <span className="text-sm font-medium">{actionNotice.text}</span>
+            <span>{actionNotice.text}</span>
           </div>
-          <button
-            onClick={() => setActionNotice(null)}
-            className="text-xs uppercase tracking-wider text-gray-400 hover:text-white"
-          >
+          <button className="notice-dismiss-btn" onClick={() => setActionNotice(null)}>
             Dismiss
           </button>
         </div>
       )}
 
       {/* TOP HERO METRICS & CONTROL BAR */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* CARD 1: OVERALL HEALTH GAUGE (5 COLS) */}
-        <div className="lg:col-span-5 bg-[#121620] border border-gray-800 rounded-2xl p-6 shadow-xl relative overflow-hidden flex flex-col justify-between">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-bl from-cyan-500/10 via-emerald-500/5 to-transparent rounded-full blur-2xl pointer-events-none" />
-
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center space-x-2.5">
-              <ShieldCheck className="w-6 h-6 text-emerald-400" />
-              <h2 className="text-lg font-bold tracking-wide text-white">Platform Integrity Score</h2>
+      <div className="integrity-hero-grid">
+        {/* CARD 1: OVERALL HEALTH GAUGE */}
+        <div className="integrity-hero-card">
+          <div className="card-header-row">
+            <div className="card-title-group">
+              <ShieldCheck size={20} color="#34d399" />
+              <span>Platform Integrity Score</span>
             </div>
-            <span
-              className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider flex items-center space-x-1.5 ${
-                overallStatus === 'HEALTHY'
-                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                  : overallStatus === 'WARNING'
-                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                  : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-              }`}
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  overallStatus === 'HEALTHY'
-                    ? 'bg-emerald-400 animate-pulse'
-                    : overallStatus === 'WARNING'
-                    ? 'bg-amber-400 animate-pulse'
-                    : 'bg-rose-400 animate-ping'
-                }`}
-              />
+            <span className={`integrity-status-pill status-${overallStatus.toLowerCase()}`}>
+              <span className={`pulse-dot dot-${overallStatus.toLowerCase()}`} />
               <span>{overallStatus === 'HEALTHY' ? 'All Systems Go' : overallStatus}</span>
             </span>
           </div>
 
-          <div className="flex items-center space-x-6 my-2">
+          <div className="gauge-content-row">
             {/* BIG SCORE CIRCLE */}
-            <div className="relative flex items-center justify-center w-28 h-28 rounded-full border-4 border-gray-800 bg-[#0c0f17]">
-              <div
-                className={`text-3xl font-extrabold tracking-tight ${
-                  overallScore >= 95
-                    ? 'text-emerald-400'
-                    : overallScore >= 75
-                    ? 'text-amber-400'
-                    : 'text-rose-400'
-                }`}
-              >
-                {overallScore}%
-              </div>
+            <div className={`gauge-circle score-${overallScore >= 90 ? 'high' : overallScore >= 75 ? 'med' : 'low'}`}>
+              <span className={`gauge-score-value val-${overallStatus.toLowerCase()}`}>{overallScore}%</span>
+              <span className="gauge-score-label">Health</span>
             </div>
 
             {/* BREAKDOWN PILLS */}
-            <div className="flex-1 space-y-2">
-              <div className="flex items-center justify-between text-xs text-gray-400">
-                <span className="flex items-center space-x-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block" />
-                  <span>Healthy Engines</span>
+            <div className="gauge-stats-list">
+              <div className="stat-item">
+                <span>
+                  <span className="stat-dot dot-healthy" />
+                  Healthy Engines
                 </span>
-                <span className="font-bold text-white">
+                <strong>
                   {auditData?.healthy_count || 0} / {auditData?.total_subsystems || 11}
-                </span>
+                </strong>
               </div>
-              <div className="flex items-center justify-between text-xs text-gray-400">
-                <span className="flex items-center space-x-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
-                  <span>Warnings / Standby</span>
+              <div className="stat-item">
+                <span>
+                  <span className="stat-dot dot-warning" />
+                  Warnings / Standby
                 </span>
-                <span className="font-bold text-amber-400">{auditData?.warning_count || 0}</span>
+                <strong style={{ color: '#fbbf24' }}>{auditData?.warning_count || 0}</strong>
               </div>
-              <div className="flex items-center justify-between text-xs text-gray-400">
-                <span className="flex items-center space-x-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-rose-400 inline-block" />
-                  <span>Degraded Engines</span>
+              <div className="stat-item">
+                <span>
+                  <span className="stat-dot dot-degraded" />
+                  Degraded Engines
                 </span>
-                <span className="font-bold text-rose-400">{auditData?.degraded_count || 0}</span>
+                <strong style={{ color: '#fb7185' }}>{auditData?.degraded_count || 0}</strong>
               </div>
 
               {/* Progress Bar */}
-              <div className="w-full bg-gray-800 h-2 rounded-full overflow-hidden flex mt-2">
+              <div className="progress-track">
                 <div
-                  className="bg-emerald-500 h-full transition-all duration-500"
+                  className="progress-segment seg-healthy"
                   style={{
                     width: `${((auditData?.healthy_count || 0) / (auditData?.total_subsystems || 11)) * 100}%`
                   }}
                 />
                 <div
-                  className="bg-amber-500 h-full transition-all duration-500"
+                  className="progress-segment seg-warning"
                   style={{
                     width: `${((auditData?.warning_count || 0) / (auditData?.total_subsystems || 11)) * 100}%`
                   }}
                 />
                 <div
-                  className="bg-rose-500 h-full transition-all duration-500"
+                  className="progress-segment seg-degraded"
                   style={{
                     width: `${((auditData?.degraded_count || 0) / (auditData?.total_subsystems || 11)) * 100}%`
                   }}
@@ -356,64 +316,56 @@ export default function IntegrityManager() {
             </div>
           </div>
 
-          <div className="mt-4 pt-3 border-t border-gray-800/80 flex items-center justify-between text-xs text-gray-500">
+          <div className="card-footer-meta">
             <span>Latency: {auditData?.audit_latency_ms || 0}ms</span>
             <span>Last Audit: {auditData?.dual_time || 'Just now'}</span>
           </div>
         </div>
 
-        {/* CARD 2: DUAL TIMEZONE & MARKET MONITOR (3 COLS) */}
-        <div className="lg:col-span-3 bg-[#121620] border border-gray-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
-          <div className="flex items-center space-x-2 text-gray-400 text-xs font-semibold uppercase tracking-wider mb-2">
-            <Clock className="w-4 h-4 text-cyan-400" />
+        {/* CARD 2: DUAL TIMEZONE & MARKET MONITOR */}
+        <div className="integrity-hero-card">
+          <div className="card-title-group small">
+            <Clock size={14} color="#38bdf8" />
             <span>Dual Sync Clocks</span>
           </div>
 
-          <div className="space-y-4 my-auto">
-            <div className="bg-[#0b0e14] p-3 rounded-xl border border-gray-800/80 flex items-center justify-between">
+          <div className="clock-box-list">
+            <div className="clock-item">
               <div>
-                <div className="text-[10px] uppercase font-bold text-gray-500">India (IST)</div>
-                <div className="text-base font-extrabold text-cyan-400 tracking-wide font-mono">
-                  {liveDualClock.ist || 'Loading...'}
-                </div>
+                <div className="clock-meta-label">India (IST)</div>
+                <div className="clock-digits ist">{liveDualClock.ist || 'Loading...'}</div>
               </div>
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950/60 text-cyan-300 border border-cyan-800/40">
-                NSE Window
-              </span>
+              <span className="clock-tag ist-tag">NSE Window</span>
             </div>
 
-            <div className="bg-[#0b0e14] p-3 rounded-xl border border-gray-800/80 flex items-center justify-between">
+            <div className="clock-item">
               <div>
-                <div className="text-[10px] uppercase font-bold text-gray-500">Sydney (AEDT)</div>
-                <div className="text-base font-extrabold text-indigo-400 tracking-wide font-mono">
-                  {liveDualClock.syd || 'Loading...'}
-                </div>
+                <div className="clock-meta-label">Sydney (AEDT)</div>
+                <div className="clock-digits syd">{liveDualClock.syd || 'Loading...'}</div>
               </div>
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-950/60 text-indigo-300 border border-indigo-800/40">
-                +5.5 hrs
-              </span>
+              <span className="clock-tag syd-tag">+5.5 hrs</span>
             </div>
           </div>
 
-          <div className="text-[11px] text-gray-500 pt-2 border-t border-gray-800/80 flex items-center justify-between">
+          <div className="card-footer-meta">
             <span>Market Session:</span>
-            <span className="text-gray-300 font-medium">9:15 AM - 3:30 PM IST</span>
+            <strong style={{ color: '#e2e8f0' }}>9:15 AM - 3:30 PM IST</strong>
           </div>
         </div>
 
-        {/* CARD 3: MISSION CONTROL ACTIONS (4 COLS) */}
-        <div className="lg:col-span-4 bg-[#121620] border border-gray-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center space-x-2 text-gray-400 text-xs font-semibold uppercase tracking-wider">
-              <Zap className="w-4 h-4 text-amber-400" />
+        {/* CARD 3: MISSION CONTROL ACTIONS */}
+        <div className="integrity-hero-card">
+          <div className="card-header-row">
+            <div className="card-title-group small">
+              <Zap size={14} color="#f59e0b" />
               <span>Integrity Actions</span>
             </div>
-            <div className="flex items-center space-x-1.5 text-xs">
-              <span className="text-gray-500 text-[11px]">Auto-Refresh:</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Auto:</span>
               <select
+                className="auto-refresh-select"
                 value={autoRefreshSecs}
                 onChange={e => setAutoRefreshSecs(Number(e.target.value))}
-                className="bg-[#0b0e14] text-gray-300 text-xs border border-gray-700 rounded px-2 py-0.5 focus:outline-none"
               >
                 <option value={0}>Off</option>
                 <option value={10}>10s</option>
@@ -423,55 +375,51 @@ export default function IntegrityManager() {
             </div>
           </div>
 
-          <div className="space-y-3 my-auto">
+          <div className="action-buttons-group">
             {/* DEEP PROBE BUTTON */}
             <button
+              className="btn-integrity-primary"
               onClick={handleDeepProbe}
               disabled={probing || loading}
-              className="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-50 text-white rounded-xl font-bold shadow-lg shadow-cyan-900/30 transition-all text-sm"
             >
-              <RefreshCw className={`w-4 h-4 ${probing ? 'animate-spin' : ''}`} />
-              <span>{probing ? 'Probing All 11 Subsystems...' : 'Deep Probe All Subsystems'}</span>
+              <RefreshCw size={15} className={probing ? 'animate-spin' : ''} />
+              <span>{probing ? 'Probing 11 Subsystems...' : 'Deep Probe All Subsystems'}</span>
             </button>
 
             {/* AUTO-HEAL ALL BUTTON */}
             <button
+              className="btn-integrity-heal-all"
               onClick={handleHealAll}
-              disabled={healingAll || auditData?.warning_count + auditData?.degraded_count === 0}
-              className="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold shadow-lg shadow-emerald-900/30 transition-all text-sm"
+              disabled={healingAll || ((auditData?.warning_count || 0) + (auditData?.degraded_count || 0) === 0)}
             >
-              <Wrench className={`w-4 h-4 ${healingAll ? 'animate-spin' : ''}`} />
+              <Wrench size={15} className={healingAll ? 'animate-spin' : ''} />
               <span>
                 {healingAll
-                  ? 'Healing Warnings & Degraded...'
+                  ? 'Healing Warnings...'
                   : `One-Click Auto-Heal (${(auditData?.warning_count || 0) + (auditData?.degraded_count || 0)} Warnings)`}
               </span>
             </button>
           </div>
 
-          <div className="text-[11px] text-gray-500 pt-2 border-t border-gray-800/80 flex items-center justify-between">
+          <div className="card-footer-meta">
             <span>Regression Watcher:</span>
-            <span className="text-emerald-400 font-bold flex items-center space-x-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Active in Background</span>
+            <span style={{ color: '#34d399', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span className="pulse-dot dot-healthy" />
+              <span>Active 60s Loop</span>
             </span>
           </div>
         </div>
       </div>
 
       {/* FILTER TABS & SEARCH BAR */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#121620] border border-gray-800 p-4 rounded-xl">
+      <div className="integrity-toolbar">
         {/* Category Pill Filters */}
-        <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+        <div className="category-tabs-row">
           {categories.map(cat => (
             <button
               key={cat}
               onClick={() => setSelectedCategory(cat)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
-                selectedCategory === cat
-                  ? 'bg-cyan-500 text-black shadow-md shadow-cyan-500/20'
-                  : 'bg-[#0c0f17] text-gray-400 hover:text-white border border-gray-800'
-              }`}
+              className={`category-tab-btn ${selectedCategory === cat ? 'active' : ''}`}
             >
               {cat === 'ALL' ? `All Engines (${subsystems.length})` : cat}
             </button>
@@ -479,20 +427,17 @@ export default function IntegrityManager() {
         </div>
 
         {/* Search Filter */}
-        <div className="relative min-w-[260px]">
-          <Search className="w-4 h-4 text-gray-500 absolute left-3 top-1/2 -translate-y-1/2" />
+        <div className="search-input-box">
+          <Search size={14} className="search-icon-svg" />
           <input
             type="text"
+            className="search-field"
             value={searchFilter}
             onChange={e => setSearchFilter(e.target.value)}
             placeholder="Search engine, metric, or status..."
-            className="w-full bg-[#0b0e14] border border-gray-800 rounded-lg pl-9 pr-4 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-cyan-500 transition-colors"
           />
           {searchFilter && (
-            <button
-              onClick={() => setSearchFilter('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs"
-            >
+            <button className="search-clear-btn" onClick={() => setSearchFilter('')}>
               ✕
             </button>
           )}
@@ -500,85 +445,48 @@ export default function IntegrityManager() {
       </div>
 
       {/* SUBSYSTEM CARDS GRID (11 ENGINES) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+      <div className="subsystems-grid">
         {filteredSubsystems.map(sub => {
           const isHealing = Boolean(healingSubsystems[sub.id]);
           const status = sub.status || 'UNKNOWN';
 
           return (
-            <div
-              key={sub.id}
-              className={`bg-[#121620] border rounded-2xl p-5 shadow-lg flex flex-col justify-between transition-all hover:border-gray-700 ${
-                status === 'HEALTHY'
-                  ? 'border-gray-800/90 hover:shadow-emerald-950/20'
-                  : status === 'WARNING'
-                  ? 'border-amber-500/40 bg-amber-950/10 hover:shadow-amber-950/20'
-                  : 'border-rose-500/50 bg-rose-950/20 hover:shadow-rose-950/30'
-              }`}
-            >
+            <div key={sub.id} className={`subsystem-card card-${status.toLowerCase()}`}>
               {/* Card Header */}
               <div>
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2.5 rounded-xl bg-[#0c0f17] border border-gray-800">
+                <div className="subsystem-top-row">
+                  <div className="subsystem-info-group">
+                    <div className="subsystem-icon-wrapper">
                       {getSubsystemIcon(sub.id, sub.category)}
                     </div>
                     <div>
-                      <h3 className="text-sm font-bold text-white tracking-wide">{sub.name}</h3>
-                      <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
-                        {sub.category}
-                      </span>
+                      <div className="subsystem-name-label">{sub.name}</div>
+                      <div className="subsystem-category-tag">{sub.category}</div>
                     </div>
                   </div>
 
                   {/* Status Badge */}
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center space-x-1 border ${
-                      status === 'HEALTHY'
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                        : status === 'WARNING'
-                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                        : 'bg-rose-500/20 text-rose-400 border-rose-500/40'
-                    }`}
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        status === 'HEALTHY'
-                          ? 'bg-emerald-400'
-                          : status === 'WARNING'
-                          ? 'bg-amber-400 animate-pulse'
-                          : 'bg-rose-400 animate-ping'
-                      }`}
-                    />
+                  <span className={`integrity-status-pill status-${status.toLowerCase()}`}>
+                    <span className={`pulse-dot dot-${status.toLowerCase()}`} />
                     <span>{status}</span>
                   </span>
                 </div>
 
                 {/* Heartbeat & Latency Badges */}
-                <div className="flex flex-wrap items-center gap-2 my-3">
-                  <span className="px-2.5 py-1 rounded-md text-[11px] font-mono font-medium bg-[#0b0e14] text-cyan-300 border border-gray-800">
-                    {sub.heartbeat}
-                  </span>
-                  <span className="px-2.5 py-1 rounded-md text-[11px] font-mono text-gray-400 bg-[#0b0e14] border border-gray-800">
-                    ⏱️ {sub.latency_ms}ms
-                  </span>
+                <div className="subsystem-kpi-row">
+                  <span className="kpi-chip kpi-heartbeat">{sub.heartbeat}</span>
+                  <span className="kpi-chip kpi-latency">⏱️ {sub.latency_ms}ms</span>
                 </div>
 
                 {/* Diagnostic Message */}
-                <p className="text-xs text-gray-300 leading-relaxed bg-[#0b0e14]/60 p-3 rounded-xl border border-gray-800/80 my-3 font-normal">
-                  {sub.message}
-                </p>
+                <div className="subsystem-desc-box">{sub.message}</div>
 
                 {/* Extra metrics badges */}
                 {sub.metrics && Object.keys(sub.metrics).length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mb-4">
+                  <div className="subsystem-metrics-pills">
                     {Object.entries(sub.metrics).slice(0, 4).map(([k, v]) => (
-                      <span
-                        key={k}
-                        className="text-[10px] px-2 py-0.5 rounded bg-gray-800/60 text-gray-400 border border-gray-700/50"
-                      >
-                        <span className="text-gray-500 font-mono">{k}:</span>{' '}
-                        <span className="text-gray-200 font-bold">{String(v)}</span>
+                      <span key={k} className="metric-pill">
+                        <span>{k}:</span> <strong>{String(v)}</strong>
                       </span>
                     ))}
                   </div>
@@ -586,23 +494,19 @@ export default function IntegrityManager() {
               </div>
 
               {/* Card Footer / Self-Healing Button */}
-              <div className="pt-3 border-t border-gray-800 flex items-center justify-between mt-2">
-                <span className="text-[11px] text-gray-500 font-mono">ID: {sub.id}</span>
+              <div className="subsystem-card-footer">
+                <span className="subsystem-id-label">ID: {sub.id}</span>
                 {sub.can_heal ? (
                   <button
                     onClick={() => handleHealSubsystem(sub.id, sub.name)}
                     disabled={isHealing}
-                    className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                      status === 'HEALTHY'
-                        ? 'bg-[#0b0e14] hover:bg-gray-800 text-gray-300 border border-gray-700'
-                        : 'bg-amber-500 hover:bg-amber-400 text-black shadow-md shadow-amber-500/20'
-                    }`}
+                    className={`btn-card-heal ${status === 'HEALTHY' ? 'heal-healthy' : 'heal-warning'}`}
                   >
-                    <Wrench className={`w-3.5 h-3.5 ${isHealing ? 'animate-spin' : ''}`} />
+                    <Wrench size={12} className={isHealing ? 'animate-spin' : ''} />
                     <span>{isHealing ? 'Healing...' : status === 'HEALTHY' ? 'Test Self-Heal' : 'Heal Now'}</span>
                   </button>
                 ) : (
-                  <span className="text-[11px] text-gray-500 italic">Continuous Auto-Check</span>
+                  <span className="auto-checked-label">Continuous Auto-Check</span>
                 )}
               </div>
             </div>
@@ -611,59 +515,36 @@ export default function IntegrityManager() {
       </div>
 
       {/* DIAGNOSTIC EVENT LOG & REGRESSION FEED */}
-      <div className="bg-[#121620] border border-gray-800 rounded-2xl p-6 shadow-xl">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-2.5">
-            <Terminal className="w-5 h-5 text-cyan-400" />
-            <h3 className="text-base font-bold text-white tracking-wide">
-              Regression Watcher & Diagnostic Audit Stream
-            </h3>
+      <div className="integrity-events-card">
+        <div className="card-header-row">
+          <div className="card-title-group">
+            <Terminal size={18} color="#38bdf8" />
+            <span>Regression Watcher & Diagnostic Audit Stream</span>
           </div>
-          <span className="text-xs text-gray-500">Live Circular Log (Last 20 Events)</span>
+          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Live Circular Log (Last 20 Events)</span>
         </div>
 
         {eventLogs.length === 0 ? (
-          <div className="p-8 text-center text-gray-500 text-xs">
+          <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b', fontSize: '0.8rem' }}>
             No integrity events or regressions recorded yet. Run a Deep Probe to generate logs.
           </div>
         ) : (
-          <div className="space-y-2 max-h-[360px] overflow-y-auto pr-2 scrollbar-thin">
-            {eventLogs.map((evt, idx) => (
-              <div
-                key={evt.id || idx}
-                className={`p-3 rounded-xl border text-xs font-mono flex items-start space-x-3 transition-colors ${
-                  evt.level === 'ERROR'
-                    ? 'bg-rose-950/20 border-rose-500/30 text-rose-200'
-                    : evt.level === 'WARNING'
-                    ? 'bg-amber-950/20 border-amber-500/30 text-amber-200'
-                    : evt.level === 'SUCCESS'
-                    ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
-                    : 'bg-[#0b0e14] border-gray-800/80 text-gray-300'
-                }`}
-              >
-                <span
-                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
-                    evt.level === 'ERROR'
-                      ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                      : evt.level === 'WARNING'
-                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                      : evt.level === 'SUCCESS'
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                      : 'bg-gray-800 text-gray-400'
-                  }`}
-                >
-                  {evt.level}
-                </span>
-
-                <div className="flex-1">
-                  <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1">
-                    <span className="font-semibold text-gray-300">[{evt.engine_id}]</span>
-                    <span>{evt.dual_time || evt.timestamp}</span>
+          <div className="events-list-container">
+            {eventLogs.map((evt, idx) => {
+              const level = (evt.level || 'info').toLowerCase();
+              return (
+                <div key={evt.id || idx} className={`event-row row-${level}`}>
+                  <span className={`event-level-badge badge-${level}`}>{evt.level}</span>
+                  <div className="event-body">
+                    <div className="event-header-line">
+                      <span className="event-engine-id">[{evt.engine_id}]</span>
+                      <span>{evt.dual_time || evt.timestamp}</span>
+                    </div>
+                    <div className="event-message-text">{evt.message}</div>
                   </div>
-                  <div className="text-gray-200 leading-normal">{evt.message}</div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
