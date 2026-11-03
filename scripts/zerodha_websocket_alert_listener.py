@@ -552,6 +552,22 @@ class ZerodhaWebSocketAlertEngine:
 # Singleton instance
 ws_alert_engine = ZerodhaWebSocketAlertEngine()
 
+
+def get_live_ltp(symbol: str, max_age_seconds: float = 60.0) -> float | None:
+    """
+    Returns the real-time LTP from the active WebSocket stream if available
+    and fresh (within max_age_seconds), avoiding unnecessary REST API calls to kite.ltp().
+    Returns None if WebSocket tick is unavailable or stale.
+    """
+    clean_sym = symbol.upper().replace("NSE:", "").replace("BSE:", "").strip()
+    tick = ws_alert_engine.latest_ticks.get(clean_sym)
+    if tick and isinstance(tick, dict):
+        last_time = tick.get("timestamp", 0)
+        if time.time() - last_time <= max_age_seconds:
+            return float(tick.get("ltp", 0.0))
+    return None
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("=== Starting Zerodha KiteTicker WebSocket Real-Time Alert Engine ===")

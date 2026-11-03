@@ -68,6 +68,23 @@ def audit_and_restore_next_gtt_alerts(dry_run: bool = False) -> dict:
                         "created_at": g.get("created_at")
                     })
             logger.info(f"[GTT INTEGRITY MONITOR] Fetched {len(raw_gtts)} live GTT orders from Zerodha for {len(live_gtts_map)} symbols.")
+
+            # Auto-Prune Duplicates: If multiple active GTTs exist for a symbol, keep highest trigger level and purge lower ones
+            cleaned_duplicates = 0
+            if not dry_run:
+                for sym, g_list in live_gtts_map.items():
+                    active_orders = [g for g in g_list if g["status"] == "ACTIVE"]
+                    if len(active_orders) > 1:
+                        active_orders.sort(key=lambda x: x["trigger_price"], reverse=True)
+                        for dup in active_orders[1:]:
+                            try:
+                                kite.delete_gtt(dup["id"])
+                                cleaned_duplicates += 1
+                                logger.info(f"[GTT PRUNER] Pruned duplicate lower GTT #{dup['id']} for {sym} (Trig: ₹{dup['trigger_price']:.2f})")
+                            except Exception as del_e:
+                                logger.warning(f"Could not prune duplicate GTT #{dup['id']}: {del_e}")
+                if cleaned_duplicates > 0:
+                    logger.info(f"[GTT PRUNER] Successfully pruned {cleaned_duplicates} duplicate Zerodha GTT order(s).")
         except Exception as k_err:
             logger.warning(f"[GTT INTEGRITY MONITOR] Could not fetch live Zerodha GTTs: {k_err}")
             if "api_key" in str(k_err) or "access_token" in str(k_err) or "TokenException" in type(k_err).__name__:

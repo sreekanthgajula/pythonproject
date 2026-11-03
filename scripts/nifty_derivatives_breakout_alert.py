@@ -143,7 +143,8 @@ def get_nfo_instruments_df(kite=None) -> pd.DataFrame:
         return pd.DataFrame()
 
     try:
-        instruments = kite.instruments("NFO")
+        from scripts.zerodha_alert_manager import get_cached_instruments
+        instruments = get_cached_instruments("NFO", kite=kite)
         if instruments:
             df = pd.DataFrame(instruments)
             df["expiry_date"] = pd.to_datetime(df["expiry"]).dt.date

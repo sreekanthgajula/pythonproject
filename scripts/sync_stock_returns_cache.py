@@ -63,7 +63,8 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
 
     # 2. Fetch NSE instruments to map tradingsymbol -> instrument_token
     try:
-        instruments = kite.instruments("NSE")
+        from scripts.zerodha_alert_manager import get_cached_instruments
+        instruments = get_cached_instruments("NSE", kite=kite)
         token_map = {}
         for row in instruments:
             ts = row.get("tradingsymbol")

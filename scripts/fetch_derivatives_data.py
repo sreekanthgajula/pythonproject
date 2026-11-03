@@ -67,7 +67,8 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
             if 'NSE:INDIA VIX' in q:
                 india_vix = q['NSE:INDIA VIX']['last_price']
                 
-            instruments = kite.instruments('NFO')
+            from scripts.zerodha_alert_manager import get_cached_instruments
+            instruments = get_cached_instruments('NFO', kite=kite)
             df = pd.DataFrame(instruments)
             nifty_opts = df[(df['name'] == 'NIFTY') & (df['segment'] == 'NFO-OPT')].copy()
             

@@ -264,7 +264,8 @@ class IntegrityManager:
                     "metrics": {"gtt_count": 0}
                 }
 
-            gtts = kite.get_gtts()
+            from scripts.zerodha_alert_manager import get_cached_gtts
+            gtts = get_cached_gtts(kite=kite, max_age_seconds=60)
             latency = round((time.time() - start) * 1000, 1)
             gtt_count = len(gtts) if isinstance(gtts, list) else 0
             

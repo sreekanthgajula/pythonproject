@@ -26,11 +26,12 @@ import DerivativesSpeedometer from './components/DerivativesSpeedometer';
 import MorningShortScanner from './components/MorningShortScanner';
 import EveningProScanner from './components/EveningProScanner';
 import IntegrityManager from './components/IntegrityManager';
+import AlphaCockpit from './components/AlphaCockpit';
 
 const API_BASE_URL = '/api';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('monthly'); // 'monthly' | 'weekly' | 'daily' | 'manual' | 'darvas' | 'active_gtts' | 'todays_race' | 'race'
+  const [activeTab, setActiveTab] = useState('cockpit'); // 'cockpit' | 'monthly' | 'weekly' | 'daily' | 'manual' | 'darvas' | 'active_gtts' | 'todays_race' | 'race'
   const [stocksData, setStocksData] = useState([]);
   const [gttsData, setGttsData] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1254,10 +1255,25 @@ export default function App() {
         {/* ROW 2: SPECIALIZED SCANNER TABS (NEW ROW BELOW) */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1rem', flexWrap: 'wrap' }}>
           <nav className="tabs-nav tabs-nav-secondary">
+            {/* 🚀 TAB 0: UNIFIED ALPHA COCKPIT */}
+            <button
+              className={`tab-btn ${activeTab === 'cockpit' ? 'active-pro' : ''}`}
+              onClick={() => setActiveTab('cockpit')}
+              style={{
+                background: activeTab === 'cockpit' ? 'rgba(56, 189, 248, 0.2)' : 'transparent',
+                borderColor: activeTab === 'cockpit' ? '#38bdf8' : undefined
+              }}
+            >
+              <Sparkles size={16} color="#38bdf8" />
+              <span>🚀 Alpha Cockpit</span>
+              <span className="tab-badge" style={{ background: '#38bdf8', color: '#000', fontWeight: 800 }}>LIVE</span>
+            </button>
+
             {/* 🚨 TAB 8: MORNING SHORT SCANNER */}
             <button
               className={`tab-btn ${activeTab === 'morning_short' ? 'active-short' : ''}`}
               onClick={() => setActiveTab('morning_short')}
+              style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
             >
               <TrendingDown size={16} color="#ef4444" />
               <span>🚨 Morning Short</span>
@@ -1326,7 +1342,7 @@ export default function App() {
           </nav>
         </div>
 
-        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && activeTab !== 'integrity' && (
+        {activeTab !== 'cockpit' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && activeTab !== 'integrity' && (
           <div className="search-box">
             <Search className="search-icon" size={16} />
             <input
@@ -1340,7 +1356,10 @@ export default function App() {
         )}
       </div>
 
-      {activeTab === 'integrity' ? (
+      {activeTab === 'cockpit' ? (
+        /* 🚀 UNIFIED ALPHA COCKPIT & MARKET RADAR */
+        <AlphaCockpit onNavigateTab={(tab) => setActiveTab(tab)} />
+      ) : activeTab === 'integrity' ? (
         /* 🛡️ PLATFORM INTEGRITY MANAGER & REGRESSION WATCHER */
         <IntegrityManager />
       ) : activeTab === 'evening_pro' ? (

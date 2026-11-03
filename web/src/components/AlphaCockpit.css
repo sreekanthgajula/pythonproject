@@ -1,0 +1,386 @@
+/* ==========================================================================
+   ALPHA COCKPIT COMPONENT STYLES
+   Pure CSS for TradingAgents Unified Alpha Command Center
+   ========================================================================== */
+
+.alpha-cockpit-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  width: 100%;
+  color: var(--text-main, #f8fafc);
+  font-family: var(--font-body, -apple-system, BlinkMacSystemFont, sans-serif);
+  animation: fadeInCockpit 0.35s ease-out;
+}
+
+@keyframes fadeInCockpit {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --------------------------------------------------------------------------
+   MACRO MARKET TICKER & DUAL CLOCK BANNER
+   -------------------------------------------------------------------------- */
+.cockpit-macro-banner {
+  background: var(--bg-card, rgba(18, 26, 43, 0.8));
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  border-radius: 16px;
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  box-shadow: var(--shadow-lg, 0 10px 25px rgba(0,0,0,0.4));
+  flex-wrap: wrap;
+  position: relative;
+  overflow: hidden;
+}
+
+.cockpit-macro-banner::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(to bottom, #38bdf8, #818cf8);
+}
+
+.macro-left-group {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.cockpit-title-block {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.cockpit-icon-badge {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(99, 102, 241, 0.2));
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cockpit-main-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: #ffffff;
+  font-family: var(--font-heading, inherit);
+  letter-spacing: -0.02em;
+}
+
+.cockpit-subtitle {
+  font-size: 0.72rem;
+  color: var(--text-dim, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.macro-kpi-chip {
+  display: flex;
+  flex-direction: column;
+  background: #090d16;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  padding: 0.45rem 0.85rem;
+  border-radius: 10px;
+}
+
+.macro-kpi-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-dim, #64748b);
+  letter-spacing: 0.06em;
+}
+
+.macro-kpi-val {
+  font-size: 0.95rem;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  margin-top: 1px;
+}
+
+.macro-kpi-val.spot { color: #38bdf8; }
+.macro-kpi-val.pcr { color: #34d399; }
+.macro-kpi-val.bias { color: #facc15; }
+
+.macro-right-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.cockpit-dual-clock-box {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #090d16;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  padding: 0.45rem 0.85rem;
+  border-radius: 10px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+}
+
+.clock-sub-item strong {
+  color: #38bdf8;
+  font-weight: 800;
+}
+
+.btn-cockpit-refresh {
+  background: #090d16;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+  color: var(--text-muted, #94a3b8);
+  padding: 0.55rem 0.85rem;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-cockpit-refresh:hover {
+  background: #1e293b;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* --------------------------------------------------------------------------
+   4-QUADRANT COCKPIT GRID
+   -------------------------------------------------------------------------- */
+.cockpit-quadrant-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.25rem;
+  width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .cockpit-quadrant-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cockpit-card {
+  background: var(--bg-card, rgba(18, 26, 43, 0.75));
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  border-radius: 16px;
+  padding: 1.25rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.cockpit-card:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-2px);
+}
+
+.cockpit-card.card-darvas {
+  border-top: 3px solid #38bdf8;
+}
+
+.cockpit-card.card-btst {
+  border-top: 3px solid #10b981;
+}
+
+.cockpit-card.card-short {
+  border-top: 3px solid #f43f5e;
+}
+
+.cockpit-card.card-race {
+  border-top: 3px solid #f59e0b;
+}
+
+.cockpit-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.cockpit-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-family: var(--font-heading, inherit);
+  color: #ffffff;
+}
+
+.cockpit-card-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  letter-spacing: 0.06em;
+}
+
+.badge-darvas {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.badge-btst {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-short {
+  background: rgba(244, 63, 94, 0.15);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.badge-race {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+/* Setup Items Rows */
+.setup-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.setup-item-row {
+  background: #090d16;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+  border-radius: 12px;
+  padding: 0.75rem 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  transition: all 0.15s ease;
+}
+
+.setup-item-row:hover {
+  background: #0d1320;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.setup-left-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.setup-rank-num {
+  font-size: 0.8rem;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-dim, #64748b);
+  width: 20px;
+}
+
+.setup-symbol-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: -0.01em;
+}
+
+.setup-tag-line {
+  font-size: 0.68rem;
+  color: var(--text-dim, #64748b);
+  margin-top: 1px;
+}
+
+.setup-metrics-cluster {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.setup-metric-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.setup-metric-lbl {
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-dim, #64748b);
+}
+
+.setup-metric-val {
+  font-size: 0.85rem;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+}
+
+.val-green { color: #34d399; }
+.val-red { color: #fb7185; }
+.val-cyan { color: #38bdf8; }
+.val-amber { color: #fbbf24; }
+
+.btn-setup-action {
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-setup-action:hover {
+  background: var(--primary-cyan, #38bdf8);
+  color: #000000;
+  border-color: var(--primary-cyan, #38bdf8);
+}
+
+.cockpit-card-footer {
+  margin-top: 1rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--text-dim, #64748b);
+}
+
+.cockpit-card-footer strong {
+  color: var(--text-muted, #94a3b8);
+}
+
+.cockpit-empty-state {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--text-dim, #64748b);
+  font-size: 0.78rem;
+  font-style: italic;
+}
