@@ -200,8 +200,8 @@ class ZerodhaWebSocketAlertEngine:
         clean_sym = symbol.strip().upper()
         matched_meta = None
 
-        # Search across rating tables ('monthly', 'weekly', 'daily')
-        for tf in ["monthly", "weekly", "daily"]:
+        # Search across rating tables ('darvas', 'monthly', 'weekly', 'daily')
+        for tf in ["darvas", "monthly", "weekly", "daily"]:
             try:
                 col = self.dm.db[tf]
                 doc = col.find_one({"symbol": clean_sym}) or col.find_one({"symbol": f"{clean_sym}.NS"})
@@ -348,68 +348,77 @@ class ZerodhaWebSocketAlertEngine:
         except Exception as analysis_err:
             logger.error(f"5-Min Good Buyer Volume Analysis failed for {symbol}: {analysis_err}")
 
-        # 3. Dispatch Telegram alert ONLY IF the stock is part of the DARVAS BOX table list
+        # 3. Dispatch Telegram alert through the 6-Agent Swarm "Is It Ripe?" Gate
         try:
             telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
             telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
             if telegram_token and telegram_chat_id:
-                from data_manager import DataManager, is_telegram_darvas_breakout_allowed
-                
-                # STRICT DARVAS BOX 1% BREAKOUT FILTER: Only send Telegram alert if stock exists in 'darvas' table list AND price >= 1% breakout level
-                is_allowed, filter_msg = is_telegram_darvas_breakout_allowed(symbol, current_price)
-                if not is_allowed:
-                    logger.info(f"⏭️ [TELEGRAM DARVAS FILTER] Skipped Telegram alert for {symbol}: {filter_msg}")
+                # Prevent excessive alert spam: max 3 alerts per stock per day
+                if today_count > 3:
+                    logger.info(f"⏭️ [DAILY ALERT LIMIT] Already sent {today_count - 1} alerts today for {symbol}. Skipping redundant alert.")
                     return
 
-                # Prevent excessive alert spam: max 3 alerts per stock per day for Darvas
-                if is_darvas and today_count > 3:
-                    logger.info(f"⏭️ [DARVAS DAILY LIMIT] Already sent {today_count - 1} alerts today for {symbol}. Skipping redundant alert.")
-                    return
+                from data_manager import DataManager
+                from scripts.chart_generator import send_telegram_chart_alert, generate_5min_chart_buffer
+                from scripts.agents_debate_swarm import run_swarm_agents_debate, format_swarm_debate_telegram_block
 
                 _dm = DataManager()
-                darvas_doc = _dm.db["darvas"].find_one({"symbol": symbol}) or {}
-                box_top = darvas_doc.get("box_top") or meta.get("recent_high") or current_price
-                box_bottom = darvas_doc.get("box_bottom") or 0.0
-                vol_ratio = darvas_doc.get("volume_surge_ratio") or 1.5
-                close_strength = darvas_doc.get("close_strength_pct") or 80.0
-                nifty_regime = darvas_doc.get("nifty_regime") or "BULLISH_TAILWIND"
+                # Lookup stock metadata across current timeframe and darvas collections
+                col_names = _dm.db.list_collection_names()
+                table_doc = _dm.db[tf].find_one({"symbol": symbol}) if tf in col_names else {}
+                darvas_doc = _dm.db["darvas"].find_one({"symbol": symbol}) if "darvas" in col_names else {}
+                source_doc = darvas_doc or table_doc or {}
+
+                box_top = source_doc.get("box_top") or meta.get("recent_high") or current_price
+                box_bottom = source_doc.get("box_bottom") or (box_top * 0.90)
+                vol_ratio = source_doc.get("volume_surge_ratio") or meta.get("volume_surge_ratio") or 1.5
+                close_strength = source_doc.get("close_strength_pct") or meta.get("close_strength_pct") or 80.0
+                nifty_regime = source_doc.get("nifty_regime") or "BULLISH_TAILWIND"
                 time_stamp = format_alert_dual_timestamp(get_now_ist())
 
+                # --- 6-AGENT QUANTITATIVE SWARM DEBATE GATE ("IS IT RIPE?") ---
+                debate_res = run_swarm_agents_debate(
+                    symbol=symbol,
+                    setup_type="GTT_BREAKOUT",
+                    current_price=current_price,
+                    trigger_price=trigger_price,
+                    meta={
+                        "volume_surge_ratio": vol_ratio,
+                        "close_strength_pct": close_strength,
+                        "recent_high": box_top,
+                        "box_bottom": box_bottom,
+                        "timeframe": tf
+                    }
+                )
+
+                is_ripe = debate_res.get("is_ripe", False)
+                rating = debate_res.get("agents_debate_rating", 0.0)
+
+                # Gate: Only allow alert if Swarm reaches ripe consensus (rating >= 7.0 / 10)
+                if not is_ripe or rating < 7.0:
+                    logger.info(
+                        f"⏭️ [SWARM FILTER - UNRIPE] Blocked Telegram alert for {symbol}: "
+                        f"Consensus Rating {rating}/10 < 7.0 | Verdict: {debate_res.get('agents_debate_verdict')} "
+                        f"| Trap Risks: {debate_res.get('trap_reasons')}"
+                    )
+                    return
+
+                title_prefix = "⚡ TRUE DARVAS BOX BREAKOUT" if is_darvas else f"⚡ GTT 1% BREAKOUT ({tf.upper()})"
                 tg_text = (
-                    f"⚡ <b>TRUE DARVAS BOX BREAKOUT ALERT</b> - <b>#{symbol}</b>\n\n"
+                    f"<b>{title_prefix} ALERT</b> - <b>#{symbol}</b>\n\n"
                     f"📈 <b>Live Price</b>: ₹{current_price:,.2f} (Trigger: ₹{trigger_price:,.2f})\n"
-                    f"📦 <b>Box Range</b>: [₹{box_bottom:,.2f} - ₹{box_top:,.2f}]\n"
+                    f"📦 <b>Base / Box Range</b>: [₹{box_bottom:,.2f} - ₹{box_top:,.2f}]\n"
                     f"🔥 <b>Volume Surge Ratio</b>: <b>{vol_ratio:.1f}x 20d Avg</b>\n"
                     f"💪 <b>Close Strength</b>: <b>{close_strength:.1f}%</b> of daily range\n"
                     f"🏛️ <b>Benchmark Regime</b>: <b>{nifty_regime}</b>\n"
                     f"🕒 <b>{time_stamp}</b>\n\n"
-                    f"📝 <i>{darvas_doc.get('reason', 'Confirmed Darvas Box Breakout')}</i>"
+                    f"📝 <i>{source_doc.get('reason', f'Verified {tf.capitalize()} GTT Breakout Trigger')}</i>"
                 )
-                
-                from scripts.chart_generator import send_telegram_chart_alert, generate_5min_chart_buffer
-                from scripts.agents_debate_swarm import run_swarm_agents_debate, format_swarm_debate_telegram_block
 
-                # 2. Run 6-Agent Quantitative Swarm Debate on the Darvas Setup
-                debate_res = {}
-                try:
-                    debate_res = run_swarm_agents_debate(
-                        symbol=symbol,
-                        setup_type="DARVAS_BREAKOUT",
-                        current_price=current_price,
-                        trigger_price=trigger_price,
-                        meta={
-                            "volume_surge_ratio": vol_ratio,
-                            "close_strength_pct": close_strength,
-                            "recent_high": box_top,
-                            "box_bottom": box_bottom
-                        }
-                    )
-                    debate_block = format_swarm_debate_telegram_block(debate_res)
-                    tg_text += f"\n\n{debate_block}"
-                    logger.info(f"Swarm Debate for {symbol}: Rating={debate_res.get('agents_debate_rating')}/10 | Verdict={debate_res.get('agents_debate_verdict')}")
-                except Exception as deb_err:
-                    logger.warning(f"Swarm debate evaluation note for {symbol}: {deb_err}")
+                debate_block = format_swarm_debate_telegram_block(debate_res)
+                tg_text += f"\n\n{debate_block}"
+                logger.info(f"Swarm Debate for {symbol}: RIPE BREAKOUT APPROVED ✅ | Rating={rating}/10 | Verdict={debate_res.get('agents_debate_verdict')}")
 
                 # Append 5-min buyer analysis details if available
                 buyer_score = buyer_analysis.get("score_out_of_10")
@@ -424,12 +433,12 @@ class ZerodhaWebSocketAlertEngine:
 
                 # Generate 5m Candlestick + Volume + OBV + True Strength (TSI) chart
                 chart_buf = None
-                deb_rating_str = f" • Agents Debate {debate_res.get('agents_debate_rating')}/10" if debate_res.get("agents_debate_rating") else ""
+                deb_rating_str = f" • Agents Debate {rating}/10"
                 try:
                     chart_buf = generate_5min_chart_buffer(
                         symbol=symbol,
                         trigger_price=trigger_price,
-                        title_suffix=f" • Darvas Breakout{deb_rating_str}"
+                        title_suffix=f" • GTT Breakout{deb_rating_str}"
                     )
                 except Exception as c_err:
                     logger.warning(f"Error generating 5m chart for {symbol}: {c_err}")
@@ -442,7 +451,7 @@ class ZerodhaWebSocketAlertEngine:
                     parse_mode="HTML"
                 )
                 if res.get("sent"):
-                    logger.info(f"⚡ [TELEGRAM] Successfully dispatched True Darvas Box Breakout Alert with 5m Chart for {symbol}!")
+                    logger.info(f"⚡ [TELEGRAM] Successfully dispatched RIPE GTT Alert with 4-Panel 5m Chart for {symbol}!")
                 else:
                     logger.error(f"Telegram dispatch failed for {symbol}: {res.get('error') or res.get('message')}")
             else:

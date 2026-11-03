@@ -677,17 +677,25 @@ def run_stock_returns_sync_loop():
     Background daemon thread that automatically syncs historical daily closes
     (prev_close, week_ago_close, month_ago_close) for all tracked stocks
     from Zerodha Kite Connect to ensure Stock Race Standings are 100% accurate.
-    Runs every 2 hours.
+    Checks connection every 30s until Zerodha is connected, then syncs every 30 minutes.
     """
-    time.sleep(20)
+    time.sleep(5)
     while True:
         try:
-            from scripts.sync_stock_returns_cache import sync_stock_returns_cache
-            res = sync_stock_returns_cache(force=False)
-            print(f"[RACE-SYNC-LOOP] Stock returns cache sync completed: {res.get('synced_count', 0)} stocks updated.")
+            status_info = get_zerodha_status(force=False)
+            if status_info.get("status") == "valid":
+                from scripts.sync_stock_returns_cache import sync_stock_returns_cache
+                res = sync_stock_returns_cache(force=False)
+                print(f"[RACE-SYNC-LOOP] Stock returns cache sync completed: {res.get('synced_count', 0)} stocks updated.")
+                # After successful sync, sleep for 30 minutes during market operations
+                time.sleep(1800)
+            else:
+                # If Zerodha is not logged in yet (e.g. machine just turned on),
+                # retry every 25 seconds instead of waiting hours
+                time.sleep(25)
         except Exception as e:
             print(f"[RACE-SYNC-LOOP] Error syncing stock returns cache: {e}")
-        time.sleep(7200)
+            time.sleep(30)
 
 @app.on_event("startup")
 def startup_event():
@@ -938,6 +946,10 @@ def post_zerodha_login(req: TotpRequest):
         _zerodha_status_cache["timestamp"] = 0.0
         _zerodha_status_cache["data"] = {"configured": True, "status": "valid"}
 
+        # Invalidate stock returns cache so fresh prices are fetched immediately from Zerodha
+        _stock_returns_cache["timestamp"] = 0.0
+        _stock_returns_cache["data"] = {}
+
         # Automatically start/restart KiteTicker WebSocket with the fresh access token
         try:
             from scripts.zerodha_websocket_alert_listener import ws_alert_engine
@@ -946,6 +958,14 @@ def post_zerodha_login(req: TotpRequest):
             print("[ZERODHA-LOGIN] Started KiteTicker WebSocket with new access token.")
         except Exception as ws_err:
             print(f"[ZERODHA-LOGIN] Warning: Could not start KiteTicker WebSocket after login: {ws_err}")
+
+        # Trigger automatic Stock Returns Cache sync in background
+        try:
+            from scripts.sync_stock_returns_cache import sync_stock_returns_cache
+            threading.Thread(target=sync_stock_returns_cache, kwargs={"force": False}, daemon=True).start()
+            print("[ZERODHA-LOGIN] Automatically launched Stock Returns Cache sync after Zerodha login.")
+        except Exception as sync_err:
+            print(f"[ZERODHA-LOGIN] Warning: Could not trigger post-login stock returns cache sync: {sync_err}")
 
         # Trigger automatic GTT next alert audit in background
         try:
@@ -1895,16 +1915,22 @@ def delete_batch_stock_ratings(timeframe: str, req: BatchDeleteRequest):
         raise HTTPException(status_code=500, detail=f"Failed to batch delete from {tf_clean} table: {e}")
 
 @app.get("/api/race/daily")
-def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = False):
+def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = False, force_refresh: bool = False):
     """
     Returns the Stock Alert Race leaderboard.
     Aggregates breakout alerts across monthly, weekly, daily, and manual tables.
     - If today_only=True: strictly filters to stocks updated or alerted TODAY in IST.
     - If past_week_only=True: strictly filters to stocks whose market price INCREASED (>0%) over the past week (past 7 days).
+    - If force_refresh=True: clears returns cache and triggers immediate re-fetch from Zerodha.
     """
     try:
         from data_manager import DataManager
         from datetime import datetime, timezone, timedelta
+
+        if force_refresh:
+            global _stock_returns_cache
+            _stock_returns_cache["timestamp"] = 0.0
+            _stock_returns_cache["data"] = {}
 
         # Get current date in IST (Asia/Kolkata: UTC+5:30)
         ist_tz = timezone(timedelta(hours=5, minutes=30))
@@ -2071,11 +2097,16 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
         for idx, item in enumerate(filtered_items, start=1):
             item["rank"] = idx
 
+        # Check live Zerodha authentication status
+        z_stat = get_zerodha_status(force=False)
+        zerodha_connected = (z_stat.get("status") == "valid")
+
         return {
             "status": "success",
             "date": today_date_str,
             "today_only": today_only,
             "past_week_only": past_week_only,
+            "zerodha_connected": zerodha_connected,
             "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
             "count": len(filtered_items),
             "leaderboard": filtered_items
@@ -2084,14 +2115,14 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
         raise HTTPException(status_code=500, detail=f"Failed to generate daily race data: {e}")
 
 @app.get("/api/race/todays")
-def get_todays_stock_alert_race():
+def get_todays_stock_alert_race(force_refresh: bool = False):
     """Returns Today's Stock Alert Race leaderboard strictly considering current day stocks."""
-    return get_daily_stock_alert_race(today_only=True)
+    return get_daily_stock_alert_race(today_only=True, force_refresh=force_refresh)
 
 @app.get("/api/race/past-week")
-def get_past_week_stock_alert_race():
+def get_past_week_stock_alert_race(force_refresh: bool = False):
     """Returns Stock Alert Race leaderboard strictly considering stocks that INCREASED over the past week."""
-    return get_daily_stock_alert_race(past_week_only=True)
+    return get_daily_stock_alert_race(past_week_only=True, force_refresh=force_refresh)
 
 @app.get("/api/race/ticks")
 def get_live_race_ticks():

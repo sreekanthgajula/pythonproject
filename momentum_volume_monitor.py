@@ -395,15 +395,18 @@ def send_alert(
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if telegram_token and telegram_chat_id:
-        # STRICT DARVAS BOX 1% BREAKOUT FILTER: Only send Telegram alert if stock exists in 'darvas' table list AND price >= 1% breakout level
+        # 6-AGENT SWARM DEBATE GATE: Only send Telegram alert if consensus rating >= 7.0 / 10
         try:
-            from data_manager import is_telegram_darvas_breakout_allowed
-            is_allowed, filter_msg = is_telegram_darvas_breakout_allowed(ticker, price)
-            if not is_allowed:
-                logger.info(f"⏭️ [TELEGRAM DARVAS FILTER] Skipped Telegram alert for {ticker}: {filter_msg}")
+            from scripts.agents_debate_swarm import run_swarm_agents_debate
+            debate_res = run_swarm_agents_debate(symbol=ticker, current_price=price, trigger_price=price)
+            if not debate_res.get("is_ripe", False) or debate_res.get("agents_debate_rating", 0.0) < 7.0:
+                logger.info(
+                    f"⏭️ [SWARM FILTER - UNRIPE] Skipped Telegram alert for {ticker}: "
+                    f"rating {debate_res.get('agents_debate_rating')}/10 < 7.0 | Verdict: {debate_res.get('agents_debate_verdict')}"
+                )
                 telegram_token = None
         except Exception as filter_err:
-            logger.warning(f"Could not verify Darvas 1% breakout status for {ticker}: {filter_err}")
+            logger.warning(f"Could not verify swarm debate status for {ticker}: {filter_err}")
 
     if telegram_token and telegram_chat_id:
         def format_simple_ist_time(ts_val):

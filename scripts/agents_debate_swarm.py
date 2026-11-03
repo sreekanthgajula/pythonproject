@@ -114,18 +114,26 @@ def run_swarm_agents_debate(
             ind_df = calculate_chart_indicators(df)
             last_bar = ind_df.iloc[-1]
 
-            if "OBV" in ind_df.columns and "OBV_EMA20" in ind_df.columns:
-                obv_aligned = float(last_bar["OBV"]) >= float(last_bar["OBV_EMA20"])
+            if "OBV" in ind_df.columns:
+                curr_obv = float(last_bar["OBV"])
+                prev_obv = float(ind_df.iloc[-2]["OBV"]) if len(ind_df) >= 2 else curr_obv
+                prev2_obv = float(ind_df.iloc[-3]["OBV"]) if len(ind_df) >= 3 else prev_obv
+                obv_ema = float(last_bar["OBV_EMA20"]) if "OBV_EMA20" in ind_df.columns else curr_obv
+                # Bullish accumulation: OBV >= EMA20 OR 3-bar higher highs/positive slope
+                obv_aligned = (curr_obv >= obv_ema) or (curr_obv >= prev_obv >= prev2_obv) or (curr_obv > prev_obv)
 
-            if "TSI" in ind_df.columns and "TSI_Signal" in ind_df.columns:
+            if "TSI" in ind_df.columns:
                 tsi_val = float(last_bar["TSI"])
-                tsi_sig = float(last_bar["TSI_Signal"])
-                tsi_aligned = tsi_val >= tsi_sig or tsi_val >= 0.0
+                tsi_prev = float(ind_df.iloc[-2]["TSI"]) if len(ind_df) >= 2 else tsi_val
+                tsi_sig = float(last_bar["TSI_Signal"]) if "TSI_Signal" in ind_df.columns else 0.0
+                # Bullish momentum: Above Signal OR upward hooking trajectory OR above zero
+                tsi_hook_up = tsi_val > tsi_prev
+                tsi_aligned = (tsi_val >= tsi_sig) or tsi_hook_up or (tsi_val >= 0.0)
 
             if "Vol_SMA20" in ind_df.columns and float(last_bar.get("Vol_SMA20", 0)) > 0:
                 calc_ratio = float(last_bar["Volume"]) / float(last_bar["Vol_SMA20"])
                 vol_ratio = max(vol_ratio, calc_ratio)
-                has_volume_spike = vol_ratio >= 1.3
+                has_volume_spike = vol_ratio >= 1.2
         except Exception as e:
             logger.debug(f"Indicator calculation note for swarm debate: {e}")
 
@@ -134,41 +142,75 @@ def run_swarm_agents_debate(
     # =========================================================================
 
     # --- AGENT 1: Structural & Pattern Analyst (0 - 10) ---
-    # Evaluates tightness of box/base, breakout clearance, and consolidation quality
-    struct_score = 6.0
-    if darvas_doc:
-        struct_score += 1.2
-    # Reward tight base (5% - 15% height), penalize overly wide/loose boxes (>22%)
-    if 4.0 <= box_height_pct <= 14.0:
-        struct_score += 1.5
-    elif box_height_pct <= 20.0:
-        struct_score += 0.8
+    # Recognizes dual breakout archetypes:
+    # 1. Base / Darvas Box Consolidation Exit
+    # 2. Higher-High Trend Continuation / Blue Sky Momentum Run / Trailing Ladder
+    is_higher_high_run = (
+        curr_px >= (trig_px * 0.995) or
+        curr_px >= (box_top * 0.995) or
+        setup_type in ("HIGHER_HIGH", "TRAILING_LADDER", "WEEKLY", "DAILY", "MONTHLY", "GTT_BREAKOUT")
+    )
+
+    struct_score = 6.5
+    struct_label = "Base Struct"
+    if bool(darvas_doc):
+        struct_label = "Darvas Box"
+        struct_score += 1.0
+        # Reward tight base (5% - 15% height), penalize overly wide/loose boxes (>22%)
+        if 4.0 <= box_height_pct <= 14.0:
+            struct_score += 1.5
+        elif box_height_pct <= 20.0:
+            struct_score += 0.8
+        else:
+            struct_score -= 0.6
+    elif is_higher_high_run:
+        # Higher High Momentum Expansion (New high / ATH / Trailing ladder step)
+        # Clear upward price discovery without overhead supply resistance
+        struct_label = "Higher-High Trend"
+        struct_score += 1.8
     else:
-        struct_score -= 0.8
+        struct_score += 0.5
 
     # Breakout clearance bonus
     if curr_px >= trig_px:
         clearance_pct = ((curr_px - trig_px) / trig_px) * 100.0
-        struct_score += min(1.3, clearance_pct * 0.8)
+        struct_score += min(1.2, clearance_pct * 0.8)
+
+    # 5-minute candle structure confirmation if DataFrame is available
+    if df is not None and not df.empty and len(df) >= 3:
+        try:
+            c3 = float(df["Close"].iloc[-1])
+            c2 = float(df["Close"].iloc[-2])
+            c1 = float(df["Close"].iloc[-3])
+            if c3 >= c2 >= c1:
+                struct_score += 0.5  # Consecutive higher closes
+        except Exception:
+            pass
 
     struct_score = round(min(10.0, max(4.0, struct_score)), 1)
 
     # --- AGENT 2: Institutional Flow & Volume Surge Analyst (0 - 10) ---
-    # Evaluates volume surge ratio vs 20-period baseline
+    # Evaluates volume surge ratio vs 20-period baseline with adaptive base compensation
     flow_score = 5.5
-    if vol_ratio >= 3.0:
+    if vol_ratio >= 2.5:
         flow_score += 3.8
-    elif vol_ratio >= 2.0:
+    elif vol_ratio >= 1.7:
         flow_score += 2.8
-    elif vol_ratio >= 1.5:
+    elif vol_ratio >= 1.3:
         flow_score += 1.8
-    elif vol_ratio >= 1.2:
-        flow_score += 0.8
+    elif vol_ratio >= 1.15:
+        # If base is tight (VCP contraction <= 15%), supply has dried up; 1.15x is sufficient
+        if box_height_pct <= 15.0:
+            flow_score += 1.4
+        else:
+            flow_score += 0.6
     else:
-        flow_score -= 1.0
+        flow_score -= 0.8
 
-    if close_strength >= 80.0:
+    if close_strength >= 75.0:
         flow_score += 0.7
+    elif close_strength < 55.0:
+        flow_score -= 0.7
 
     flow_score = round(min(10.0, max(3.5, flow_score)), 1)
 
@@ -177,12 +219,12 @@ def run_swarm_agents_debate(
     if obv_aligned:
         mom_score += 1.8
     else:
-        mom_score -= 1.0
+        mom_score -= 0.8
 
     if tsi_aligned:
         mom_score += 1.8
     else:
-        mom_score -= 1.0
+        mom_score -= 0.8
 
     mom_score = round(min(10.0, max(3.5, mom_score)), 1)
 
@@ -195,57 +237,62 @@ def run_swarm_agents_debate(
     trap_penalty = 0.0
     trap_reasons = []
 
-    if close_strength < 65.0:
+    if close_strength < 60.0:
         trap_penalty += 0.8
         trap_reasons.append(f"Upper Wick Rejection (Close {close_strength:.0f}%)")
 
-    if vol_ratio < 1.2:
+    if vol_ratio < 1.15 and box_height_pct > 15.0:
         trap_penalty += 0.8
         trap_reasons.append(f"Light Volume ({vol_ratio:.1f}x)")
 
     if "HEADWIND" in nifty_regime.upper() or "BEAR" in nifty_regime.upper():
-        trap_penalty += 0.6
+        trap_penalty += 0.5
         trap_reasons.append(f"Market Headwind ({nifty_regime})")
 
     if not obv_aligned:
-        trap_penalty += 0.5
+        trap_penalty += 0.4
         trap_reasons.append("OBV Lagging")
 
     if not tsi_aligned:
-        trap_penalty += 0.5
+        trap_penalty += 0.4
         trap_reasons.append("TSI Divergence")
 
-    trap_penalty = round(min(3.0, trap_penalty), 1)
+    trap_penalty = round(min(2.5, trap_penalty), 1)
 
     # --- AGENT 6: Chief Risk & Portfolio Judge ---
     # Arbitrates Bull vs Bear debate and produces the final consensus rating out of 10
     regime_bonus = 0.4 if "TAILWIND" in nifty_regime.upper() else 0.0
     final_rating = round(min(10.0, max(1.0, bull_score + regime_bonus - trap_penalty)), 1)
+    is_ripe = bool(final_rating >= 7.0)
 
     if final_rating >= 8.5:
         verdict = "HIGH CONVICTION BREAKOUT 🔥"
     elif final_rating >= 7.5:
         verdict = "STRONG CONSENSUS 🚀"
-    elif final_rating >= 6.5:
-        verdict = "DEBATE APPROVED ✅"
+    elif final_rating >= 7.0:
+        verdict = "RIPE BREAKOUT APPROVED ✅"
+    elif final_rating >= 6.0:
+        verdict = "MODERATE SETUP ⚠️"
     else:
-        verdict = "MODERATE / CAUTION ⚠️"
+        verdict = "UNRIPE / TRAP RISK ⛔"
 
     filled = int(round(final_rating))
     bar = "█" * filled + "░" * (10 - filled)
 
     risk_text = "Clean Flow & R:R" if not trap_reasons else ", ".join(trap_reasons[:2])
     summary = (
-        f"Box Struct {struct_score}/10 • Flow {flow_score}/10 ({vol_ratio:.1f}x vol) • "
+        f"{struct_label} {struct_score}/10 • Flow {flow_score}/10 ({vol_ratio:.1f}x vol) • "
         f"OBV/TSI {mom_score}/10 | Trap Risk: {risk_text}"
     )
 
     return {
         "symbol": clean_sym,
+        "is_ripe": is_ripe,
         "agents_debate_rating": final_rating,
         "agents_debate_verdict": verdict,
         "agents_debate_bar": bar,
         "agents_debate_summary": summary,
+        "struct_label": struct_label,
         "structure_score": struct_score,
         "flow_score": flow_score,
         "momentum_score": mom_score,

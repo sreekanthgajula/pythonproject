@@ -24,6 +24,7 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
   const [todayDate, setTodayDate] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [lastUpdated, setLastUpdated] = useState('');
+  const [zerodhaConnected, setZerodhaConnected] = useState(true);
 
   const cacheRef = React.useRef({});
   const activeModeRef = React.useRef(activeMode);
@@ -35,13 +36,14 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
     else setActiveMode('all');
   }, [todayOnly, pastWeekOnly]);
 
-  const fetchRaceLeaderboard = async (targetMode = activeMode) => {
-    // If cached result exists, serve immediately for 0ms snappy response
-    if (cacheRef.current[targetMode]) {
+  const fetchRaceLeaderboard = async (targetMode = activeMode, forceRefresh = false) => {
+    // If cached result exists and not forcing refresh, serve immediately for 0ms snappy response
+    if (!forceRefresh && cacheRef.current[targetMode]) {
       const cached = cacheRef.current[targetMode];
       setRaceData(cached.leaderboard || []);
       setTodayDate(cached.date || new Date().toISOString().slice(0, 10));
       setLastUpdated(cached.timestamp_ist || new Date().toLocaleTimeString());
+      setZerodhaConnected(cached.zerodha_connected ?? true);
       setLoading(false);
     } else {
       setLoading(true);
@@ -54,12 +56,16 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
       } else if (targetMode === 'past_week') {
         endpoint = `${API_BASE_URL}/race/daily?past_week_only=true`;
       }
+      if (forceRefresh) {
+        endpoint += '&force_refresh=true';
+      }
 
       const res = await fetch(endpoint);
       if (res.ok) {
         const json = await res.json();
         // Update cache
         cacheRef.current[targetMode] = json;
+        setZerodhaConnected(json.zerodha_connected ?? true);
 
         // Only update active state if user is still on targetMode (prevent race conditions)
         if (activeModeRef.current === targetMode) {
@@ -230,13 +236,22 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
 
             <button
               className="btn-icon-secondary"
-              onClick={() => fetchRaceLeaderboard(activeMode)}
-              title="Refresh Live Race Standings"
+              onClick={() => fetchRaceLeaderboard(activeMode, true)}
+              title="Force Refresh Live Race Standings from Zerodha"
             >
               <RefreshCw size={18} className={loading ? 'spin-anim' : ''} />
             </button>
           </div>
         </div>
+
+        {!zerodhaConnected && (
+          <div className="race-warning-banner" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 16px', background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.35)', borderRadius: '8px', margin: '10px 0 14px 0', color: '#fca5a5', fontSize: '0.86rem', lineHeight: '1.4' }}>
+            <ShieldAlert size={18} style={{ flexShrink: 0, color: '#f87171' }} />
+            <span>
+              <strong>Zerodha Session Expired:</strong> Daily token reset by Kite Connect (standard after PC boot). Please log in via TOTP on the dashboard so the Race can stream live LTP prices directly from the exchange.
+            </span>
+          </div>
+        )}
 
         <div className="race-search-bar">
           <Search className="search-icon" size={16} />

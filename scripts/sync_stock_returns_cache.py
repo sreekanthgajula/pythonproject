@@ -133,30 +133,32 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
                     interval="day"
                 )
                 if candles and len(candles) >= 2:
-                    # If market is open or today's candle is in progress:
-                    # candles[-1] is today's bar, candles[-2] is yesterday's completed close
-                    # If market is closed on weekend, candles[-1] is Friday's completed close
-                    # Let's verify by checking date of candles[-1]
                     last_c_date = str(candles[-1]["date"])[:10]
-                    if last_c_date == today_str and len(candles) >= 3:
-                        # Today's incomplete candle
-                        prev_close = float(candles[-2]["close"])
-                        if ltp <= 0:
-                            ltp = float(candles[-1]["close"])
-                        week_idx = -7 if len(candles) >= 7 else 0
-                        month_idx = -23 if len(candles) >= 23 else 0
+                    is_today_candle = (last_c_date == today_str)
+
+                    # Official previous day close priority: q_prev from Zerodha quote is authoritative
+                    if prev_close <= 0:
+                        if is_today_candle and len(candles) >= 2:
+                            prev_close = float(candles[-2]["close"])
+                        else:
+                            prev_close = float(candles[-1]["close"])
+
+                    if ltp <= 0:
+                        ltp = float(candles[-1]["close"])
+
+                    # 1 week ago close (5 trading days back) and 1 month ago close (21 trading days back)
+                    if is_today_candle and len(candles) >= 6:
+                        week_idx = -6
+                        month_idx = -22 if len(candles) >= 22 else 0
                     else:
-                        # Completed day or weekend
-                        prev_close = float(candles[-2]["close"]) if len(candles) >= 2 else float(candles[-1]["close"])
-                        if ltp <= 0:
-                            ltp = float(candles[-1]["close"])
                         week_idx = -6 if len(candles) >= 6 else 0
                         month_idx = -22 if len(candles) >= 22 else 0
 
                     week_ago_close = float(candles[week_idx]["close"])
                     month_ago_close = float(candles[month_idx]["close"])
                 elif candles:
-                    prev_close = float(candles[-1]["close"])
+                    if prev_close <= 0:
+                        prev_close = float(candles[-1]["close"])
                     if ltp <= 0:
                         ltp = prev_close
                     week_ago_close = prev_close
