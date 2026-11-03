@@ -733,6 +733,28 @@ def run_stock_returns_sync_loop():
             print(f"[RACE-SYNC-LOOP] Error syncing stock returns cache: {e}")
             time.sleep(30)
 
+
+def run_integrity_monitor_loop():
+    """
+    Continuous platform integrity monitoring loop.
+    Audits all 11 subsystems every 60 seconds.
+    Detects cross-subsystem regressions and triggers proactive notifications.
+    """
+    time.sleep(10)
+    print("[INTEGRITY-LOOP] Platform Integrity Manager background monitoring loop active.")
+    while True:
+        try:
+            from scripts.integrity_manager import integrity_manager
+            audit = integrity_manager.run_full_integrity_audit()
+            regressions = audit.get("regressions_detected", [])
+            if regressions:
+                for r in regressions:
+                    print(f"⚠️ [INTEGRITY-REGRESSION] {r['engine_name']} degraded from {r['previous_status']} -> {r['new_status']}: {r['message']}")
+        except Exception as e:
+            print(f"[INTEGRITY-LOOP] Error running integrity audit: {e}")
+        time.sleep(60)
+
+
 @app.on_event("startup")
 def startup_event():
     # Start the daily Zerodha connection check loop in a daemon thread
@@ -762,6 +784,9 @@ def startup_event():
         print("[ZERODHA-WS] Zerodha KiteTicker WebSocket alert engine initialized.")
     except Exception as ws_err:
         print(f"[ZERODHA-WS] Could not auto-start KiteTicker WebSocket engine: {ws_err}")
+    # Start Continuous Platform Integrity Manager monitoring loop
+    threading.Thread(target=run_integrity_monitor_loop, daemon=True).start()
+    print("[INTEGRITY-LOOP] Platform Integrity Manager background monitoring loop started.")
 
 @app.get("/api/zerodha/websocket/status")
 def get_websocket_status():
@@ -2578,6 +2603,82 @@ def send_telegram_chart_alert_endpoint(req: TelegramAlertRequest):
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to dispatch Telegram chart alert: {e}")
+
+
+# =============================================================================
+# INTEGRITY MANAGER ENDPOINTS
+# =============================================================================
+
+@app.get("/api/integrity/status")
+def get_integrity_status():
+    """
+    Returns the comprehensive platform integrity health status across all 11 subsystems:
+    Overall score (0-100%), overall status (HEALTHY, WARNING, DEGRADED), detailed cards,
+    and recent diagnostic events.
+    """
+    try:
+        from scripts.integrity_manager import integrity_manager
+        return integrity_manager.run_full_integrity_audit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Integrity status audit failed: {e}")
+
+
+@app.post("/api/integrity/probe")
+def probe_integrity_now():
+    """
+    Forces an immediate live deep probe of all 11 platform subsystems.
+    """
+    try:
+        from scripts.integrity_manager import integrity_manager
+        return integrity_manager.run_full_integrity_audit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Deep probe failed: {e}")
+
+
+@app.post("/api/integrity/heal/{engine_id}")
+def heal_integrity_subsystem(engine_id: str):
+    """
+    Triggers targeted one-click self-healing for the designated subsystem
+    (e.g., restart_websocket, sync_race_cache, audit_gtts, refresh_derivatives).
+    """
+    try:
+        from scripts.integrity_manager import integrity_manager
+        heal_res = integrity_manager.heal_subsystem(engine_id)
+        # Return heal result plus refreshed status
+        refreshed = integrity_manager.run_full_integrity_audit()
+        return {
+            "heal_result": heal_res,
+            "refreshed_status": refreshed
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Self-heal failed for {engine_id}: {e}")
+
+
+@app.post("/api/integrity/heal-all")
+def heal_all_degraded_subsystems():
+    """
+    Automatically triggers self-healing on all degraded or warning subsystems.
+    """
+    try:
+        from scripts.integrity_manager import integrity_manager
+        return integrity_manager.heal_all_degraded()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Heal-all failed: {e}")
+
+
+@app.get("/api/integrity/events")
+def get_integrity_events(limit: int = 50):
+    """
+    Returns the circular diagnostic event log and regression history.
+    """
+    try:
+        from scripts.integrity_manager import integrity_manager
+        return {
+            "events": integrity_manager._event_log[:limit],
+            "regressions": integrity_manager._regression_history[:limit]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch integrity events: {e}")
 
 
 if __name__ == "__main__":

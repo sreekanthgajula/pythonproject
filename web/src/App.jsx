@@ -25,6 +25,7 @@ import StockAlertRaceChart from './components/StockAlertRaceChart';
 import DerivativesSpeedometer from './components/DerivativesSpeedometer';
 import MorningShortScanner from './components/MorningShortScanner';
 import EveningProScanner from './components/EveningProScanner';
+import IntegrityManager from './components/IntegrityManager';
 
 const API_BASE_URL = '/api';
 
@@ -58,6 +59,30 @@ export default function App() {
     updateTimes();
     const timer = setInterval(updateTimes, 10000);
     return () => clearInterval(timer);
+  }, []);
+
+  const [integritySummary, setIntegritySummary] = useState({ score: 100, status: 'HEALTHY' });
+
+  useEffect(() => {
+    const fetchIntegrityBrief = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/integrity/status`);
+        if (res.ok) {
+          const d = await res.json();
+          setIntegritySummary({
+            score: d.overall_score || 100,
+            status: d.overall_status || 'HEALTHY',
+            warningCount: d.warning_count || 0,
+            degradedCount: d.degraded_count || 0
+          });
+        }
+      } catch (e) {
+        // quiet fallback
+      }
+    };
+    fetchIntegrityBrief();
+    const integrityTimer = setInterval(fetchIntegrityBrief, 20000);
+    return () => clearInterval(integrityTimer);
   }, []);
 
   const [tabCounts, setTabCounts] = useState({ monthly: 0, weekly: 0, daily: 0, manual: 0, darvas: 0, active_gtts: 0, todays_race: 0, race: 0 });
@@ -1249,10 +1274,59 @@ export default function App() {
               <span>🚀 Supertrend Pro (BTST)</span>
               <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.evening_pro || 0}</span>
             </button>
+
+            {/* 🛡️ TAB 10: PLATFORM INTEGRITY MANAGER */}
+            <button
+              className={`tab-btn ${activeTab === 'integrity' ? 'active' : ''}`}
+              onClick={() => setActiveTab('integrity')}
+              style={{
+                borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
+                background: activeTab === 'integrity' ? 'rgba(6, 182, 212, 0.15)' : 'transparent',
+                borderColor: activeTab === 'integrity' ? '#06b6d4' : undefined
+              }}
+            >
+              <ShieldCheck
+                size={16}
+                color={
+                  integritySummary.status === 'HEALTHY'
+                    ? '#10b981'
+                    : integritySummary.status === 'WARNING'
+                    ? '#f59e0b'
+                    : '#ef4444'
+                }
+              />
+              <span>🛡️ Integrity Manager</span>
+              <span
+                className="tab-badge"
+                style={{
+                  background:
+                    integritySummary.status === 'HEALTHY'
+                      ? 'rgba(16, 185, 129, 0.2)'
+                      : integritySummary.status === 'WARNING'
+                      ? 'rgba(245, 158, 11, 0.2)'
+                      : 'rgba(239, 68, 68, 0.2)',
+                  color:
+                    integritySummary.status === 'HEALTHY'
+                      ? '#34d399'
+                      : integritySummary.status === 'WARNING'
+                      ? '#fbbf24'
+                      : '#f87171',
+                  border: `1px solid ${
+                    integritySummary.status === 'HEALTHY'
+                      ? 'rgba(16, 185, 129, 0.4)'
+                      : integritySummary.status === 'WARNING'
+                      ? 'rgba(245, 158, 11, 0.4)'
+                      : 'rgba(239, 68, 68, 0.4)'
+                  }`
+                }}
+              >
+                {integritySummary.score}%
+              </span>
+            </button>
           </nav>
         </div>
 
-        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && (
+        {activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && activeTab !== 'integrity' && (
           <div className="search-box">
             <Search className="search-icon" size={16} />
             <input
@@ -1266,7 +1340,10 @@ export default function App() {
         )}
       </div>
 
-      {activeTab === 'evening_pro' ? (
+      {activeTab === 'integrity' ? (
+        /* 🛡️ PLATFORM INTEGRITY MANAGER & REGRESSION WATCHER */
+        <IntegrityManager />
+      ) : activeTab === 'evening_pro' ? (
         /* 🚀 EVENING PROFESSIONAL BUYING (BTST) SCANNER VIEW */
         <EveningProScanner />
       ) : activeTab === 'morning_short' ? (
