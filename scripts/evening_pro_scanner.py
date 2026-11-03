@@ -1348,15 +1348,7 @@ def scan_and_rank_evening_pro_candidates(
                     is_pro and
                     debate_rating >= 7.5
                 )
-                if send_telegram and is_buy_triggered:
-                    logger.info(
-                        f"🚀 Qualified Supertrend BTST trigger for {s} "
-                        f"(Score: {res.get('pro_buying_score')} | Debate: {debate_rating}/10)! Dispatching alert..."
-                    )
-                    try:
-                        send_evening_pro_telegram_alert(res)
-                    except Exception as tg_err:
-                        logger.error(f"Error dispatching Telegram alert for {s}: {tg_err}")
+                res["is_buy_triggered"] = is_buy_triggered
 
         except Exception as e:
             logger.error(f"Error scanning {s} for supertrend candidate: {e}")
@@ -1367,6 +1359,28 @@ def scan_and_rank_evening_pro_candidates(
         key=lambda x: (x.get("agents_debate_rating", 0.0), x.get("pro_buying_score", 0.0)),
         reverse=True
     )
+
+    # DISPATCH TOP-3 HIGH-CONVICTION SNIPER PICKS TO TELEGRAM WITH 4-PANEL CHARTS
+    # Enforces Top-3 cap to eliminate message flooding, while ensuring every pick
+    # has a full 4-panel Candlestick + Volume + OBV + True Strength (TSI) photo chart.
+    if send_telegram and sorted_results:
+        top_btst_picks = [
+            r for r in sorted_results
+            if r.get("is_buy_triggered") or (r.get("signal") == "BUY" and r.get("is_pro_buying") and float(r.get("agents_debate_rating", 0.0) or 0.0) >= 7.5)
+        ][:3]  # STRICT CAP: Maximum Top 3 highest conviction picks
+
+        if top_btst_picks:
+            logger.info(f"🚀 [BTST TOP-3 DISPATCH] Dispatching Top {len(top_btst_picks)} Sniper Picks with 4-Panel Charts to Telegram...")
+            for rank_idx, cand in enumerate(top_btst_picks, 1):
+                sym = cand.get("symbol")
+                logger.info(
+                    f"  👉 [#{rank_idx} BTST Pick] Sending {sym} "
+                    f"(Swarm Rating: {cand.get('agents_debate_rating')}/10 | Pro Score: {cand.get('pro_buying_score')})..."
+                )
+                try:
+                    send_evening_pro_telegram_alert(cand, kite=kite)
+                except Exception as tg_err:
+                    logger.error(f"Error dispatching Telegram photo alert for {sym}: {tg_err}")
 
     try:
         dm = DataManager()

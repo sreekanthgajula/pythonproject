@@ -379,9 +379,9 @@ class ZerodhaWebSocketAlertEngine:
             telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
             if telegram_token and telegram_chat_id:
-                # Prevent excessive alert spam: max 3 alerts per stock per day
-                if today_count > 3:
-                    logger.info(f"⏭️ [DAILY ALERT LIMIT] Already sent {today_count - 1} alerts today for {symbol}. Skipping redundant alert.")
+                # Prevent excessive alert spam: strict max 1 alert per stock per day
+                if today_count > 1:
+                    logger.info(f"⏭️ [DAILY ALERT LIMIT] Already alerted today for {symbol} (count: {today_count}). Skipping duplicate alert.")
                     return
 
                 from data_manager import DataManager
@@ -420,12 +420,28 @@ class ZerodhaWebSocketAlertEngine:
                 is_ripe = debate_res.get("is_ripe", False)
                 rating = debate_res.get("agents_debate_rating", 0.0)
 
-                # Gate: Only allow alert if Swarm reaches ripe consensus (rating >= 7.0 / 10)
+                # Gate 1: Only allow alert if Swarm reaches ripe consensus (rating >= 7.0 / 10)
                 if not is_ripe or rating < 7.0:
                     logger.info(
-                        f"⏭️ [SWARM FILTER - UNRIPE] Blocked Telegram alert for {symbol}: "
+                        f"🚫 [SWARM FILTER - UNRIPE] Blocked Telegram alert for {symbol}: "
                         f"Consensus Rating {rating}/10 < 7.0 | Verdict: {debate_res.get('agents_debate_verdict')} "
                         f"| Trap Risks: {debate_res.get('trap_reasons')}"
+                    )
+                    return
+
+                # Gate 2: Institutional Volume Surge Filter (>= 1.3x 20d average)
+                if vol_ratio < 1.3:
+                    logger.info(
+                        f"🚫 [VOLUME FILTER] Blocked Telegram alert for {symbol}: "
+                        f"Volume surge ratio {vol_ratio:.1f}x < 1.3x 20d average."
+                    )
+                    return
+
+                # Gate 3: Upper Wick Rejection Dump Filter (Close Strength >= 65.0%)
+                if close_strength < 65.0:
+                    logger.info(
+                        f"🚫 [WICK TRAP FILTER] Blocked Telegram alert for {symbol}: "
+                        f"Close strength {close_strength:.1f}% < 65.0% (upper-wick selling trap)."
                     )
                     return
 

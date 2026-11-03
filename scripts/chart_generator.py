@@ -828,19 +828,28 @@ def send_telegram_chart_alert(
     chart_buffer: Optional[io.BytesIO] = None,
     trigger_price: Optional[float] = None,
     parse_mode: str = "HTML",
-    kite: Optional["KiteConnect"] = None
+    kite: Optional["KiteConnect"] = None,
+    require_photo: bool = True,
+    min_rating: float = 7.0,
+    force_send: bool = False
 ) -> Dict[str, Any]:
     """
     Sends a formatted alert along with the in-memory 5-minute chart screenshot to Telegram.
 
     If chart_buffer is not provided, it automatically fetches 5m candles via Zerodha
-    and renders the chart with Volume, OBV, and TSI.
+    and renders the 4-panel chart with Candlestick, Volume, OBV, and TSI.
+
+    Enforces Swarm Consensus Gate:
+      - If consensus debate rating < 7.0 / 10 and not force_send, drops the alert to eliminate
+        unripe false breakouts and alert spam.
+      - If require_photo is True (default), strictly mandates that the 4-panel photo chart
+        (Candlestick + Volume + OBV + TSI) is generated and dispatched. Never degrades to
+        text-only alerts so the trader can visually assess whether the alert is ripe.
 
     Handles Telegram's 1024-character caption limit automatically:
       - If text <= 1024 characters: sent directly as photo caption.
       - If text > 1024 characters: sends photo with summary caption, followed by the
         complete text via sendMessage so no information is lost.
-      - If chart generation fails, falls back gracefully to text-only sendMessage.
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -851,7 +860,7 @@ def send_telegram_chart_alert(
 
     clean_sym = symbol.strip().upper().replace(".NS", "")
 
-    # Automatically run 6-Agent Swarm Debate if not already evaluated in message_text
+    # Extract or calculate 6-Agent Swarm Debate Rating
     debate_rating_val = None
     if "Agents Debate" not in message_text:
         try:
@@ -865,8 +874,34 @@ def send_telegram_chart_alert(
             message_text = f"{message_text}\n\n{debate_block}"
         except Exception as deb_err:
             logger.debug(f"Swarm debate auto-eval note for {clean_sym}: {deb_err}")
+    else:
+        # Extract debate rating from message_text
+        import re
+        match = re.search(r"Agents Debate Rating:\s*<b>(\d+\.?\d*)\s*/\s*10</b>", message_text)
+        if not match:
+            match = re.search(r"Agents Debate\s+(\d+\.?\d*)/10", message_text)
+        if match:
+            try:
+                debate_rating_val = float(match.group(1))
+            except Exception:
+                pass
 
-    # 1. Obtain or generate the in-memory chart buffer
+    # --- HARD SWARM CONVICTION FILTER ---
+    # Filter out unwanted / low-probability alerts if debate rating < 7.0 / 10
+    if not force_send and debate_rating_val is not None and float(debate_rating_val) < min_rating:
+        logger.info(
+            f"🚫 [SWARM FILTER - UNRIPE] Dropped Telegram alert for {clean_sym}: "
+            f"Consensus Rating {debate_rating_val}/10 < {min_rating}/10."
+        )
+        return {
+            "status": "filtered",
+            "sent": False,
+            "photo_sent": False,
+            "reason": f"Consensus rating {debate_rating_val}/10 < {min_rating}/10",
+            "symbol": clean_sym
+        }
+
+    # 1. Obtain or generate the in-memory 4-panel chart buffer (Candlestick + Volume + OBV + TSI)
     buf = chart_buffer
     if buf is None:
         try:
@@ -878,10 +913,24 @@ def send_telegram_chart_alert(
                 title_suffix=title_suf
             )
         except Exception as e:
-            logger.error(f"Failed to generate chart buffer for Telegram alert: {e}")
+            logger.error(f"Failed to generate 4-panel chart buffer for Telegram alert {clean_sym}: {e}")
             buf = None
 
-    # 2. If chart buffer is available, dispatch via sendPhoto
+    # 2. Strict Photo Requirement Check
+    if require_photo and (buf is None or len(buf.getvalue()) == 0):
+        logger.warning(
+            f"🚫 [PHOTO REQUIRED] Required 4-panel Candlestick+Volume+OBV+TSI photo chart could not be generated for {clean_sym}. "
+            "Skipping alert dispatch to guarantee the trader always receives the visual chart to judge ripeness."
+        )
+        return {
+            "status": "skipped",
+            "sent": False,
+            "photo_sent": False,
+            "reason": "4-panel Candlestick+Volume+OBV+TSI photo chart required but unavailable",
+            "symbol": clean_sym
+        }
+
+    # 3. Dispatch via sendPhoto if chart buffer is available
     if buf is not None and len(buf.getvalue()) > 0:
         try:
             photo_url = f"https://api.telegram.org/bot{token}/sendPhoto"
@@ -900,7 +949,7 @@ def send_telegram_chart_alert(
                 }
                 resp = requests.post(photo_url, data=payload, files=files, timeout=20)
                 if resp.status_code == 200:
-                    logger.info(f"Successfully sent Telegram 5m chart alert with photo for {clean_sym}!")
+                    logger.info(f"Successfully sent Telegram 4-panel chart alert with photo for {clean_sym}!")
                     return {"status": "success", "sent": True, "photo_sent": True}
                 else:
                     logger.error(f"Telegram sendPhoto failed: {resp.status_code} - {resp.text}")
@@ -937,7 +986,7 @@ def send_telegram_chart_alert(
                 msg_resp = requests.post(msg_url, json=msg_payload, timeout=15)
 
                 if resp.status_code == 200 or msg_resp.status_code == 200:
-                    logger.info(f"Successfully dispatched Telegram 5m chart photo + detailed message for {clean_sym}!")
+                    logger.info(f"Successfully dispatched Telegram 4-panel chart photo + detailed message for {clean_sym}!")
                     return {"status": "success", "sent": True, "photo_sent": (resp.status_code == 200)}
                 else:
                     logger.error(f"Telegram photo dispatch failed: {resp.status_code} - {resp.text}")
@@ -945,23 +994,32 @@ def send_telegram_chart_alert(
         except Exception as e:
             logger.error(f"Exception during Telegram sendPhoto dispatch: {e}")
 
-    # 3. Graceful Fallback to sendMessage if photo buffer wasn't available or sendPhoto failed
-    try:
-        logger.info(f"Sending text-only fallback Telegram alert for {clean_sym}...")
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message_text,
-            "parse_mode": parse_mode,
-            "disable_web_page_preview": True
-        }
-        res = requests.post(url, json=payload, timeout=15)
-        if res.status_code == 200:
-            logger.info(f"Successfully sent text-only Telegram alert for {clean_sym}.")
-            return {"status": "success", "sent": True, "photo_sent": False}
-        else:
-            logger.error(f"Failed to send text-only Telegram alert: {res.status_code} - {res.text}")
-            return {"status": "error", "sent": False, "photo_sent": False, "error": res.text}
-    except Exception as e:
-        logger.error(f"Exception during text-only Telegram dispatch: {e}")
-        return {"status": "error", "sent": False, "photo_sent": False, "error": str(e)}
+    # 4. Text-only fallback (ONLY IF require_photo is explicitly False)
+    if not require_photo:
+        try:
+            logger.info(f"Sending text-only fallback Telegram alert for {clean_sym}...")
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": message_text,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": True
+            }
+            res = requests.post(url, json=payload, timeout=15)
+            if res.status_code == 200:
+                logger.info(f"Successfully sent text-only Telegram alert for {clean_sym}.")
+                return {"status": "success", "sent": True, "photo_sent": False}
+            else:
+                logger.error(f"Failed to send text-only Telegram alert: {res.status_code} - {res.text}")
+                return {"status": "error", "sent": False, "photo_sent": False, "error": res.text}
+        except Exception as e:
+            logger.error(f"Exception during text-only Telegram dispatch: {e}")
+            return {"status": "error", "sent": False, "photo_sent": False, "error": str(e)}
+
+    return {
+        "status": "error",
+        "sent": False,
+        "photo_sent": False,
+        "reason": "Telegram sendPhoto failed to transmit chart",
+        "symbol": clean_sym
+    }

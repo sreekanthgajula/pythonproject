@@ -1035,15 +1035,6 @@ def scan_and_rank_short_candidates(
 
             if is_confirmed:
                 confirmed_results.append(cand)
-                if send_telegram:
-                    logger.info(
-                        f"🚨 Qualified Short Trigger for {s} ({cand.get('stage')} | "
-                        f"Debate: {debate_rating}/10)! Dispatching Telegram alert..."
-                    )
-                    try:
-                        send_morning_short_telegram_alert(cand, kite=kite)
-                    except Exception as tg_err:
-                        logger.error(f"Error dispatching Telegram alert for {s}: {tg_err}")
             elif score >= 55.0 and debate_rating >= 6.0 and rr_val >= 1.3:
                 developing_results.append(cand)
 
@@ -1056,6 +1047,28 @@ def scan_and_rank_short_candidates(
         key=lambda x: (x.get("agents_debate_rating", 0.0), x.get("short_probability_score", 0.0)),
         reverse=True
     )
+
+    # DISPATCH TOP-2 HIGH-CONVICTION SHORT PICKS TO TELEGRAM WITH 4-PANEL CHARTS
+    # Enforces Top-2 cap to eliminate spam while ensuring each has a 4-panel
+    # Short Candlestick + VWAP + Volume + OBV + True Strength (TSI) photo chart.
+    if send_telegram and confirmed_sorted:
+        top_short_picks = [
+            c for c in confirmed_sorted
+            if float(c.get("agents_debate_rating", 0.0) or 0.0) >= 7.0 and float(c.get("short_probability_score", 0.0) or 0.0) >= 65.0
+        ][:2]  # STRICT CAP: Maximum Top 2 highest probability breakdown picks
+
+        if top_short_picks:
+            logger.info(f"🔻 [SHORT TOP-2 DISPATCH] Dispatching Top {len(top_short_picks)} Short Picks with 4-Panel Charts to Telegram...")
+            for rank_idx, cand in enumerate(top_short_picks, 1):
+                sym = cand.get("symbol")
+                logger.info(
+                    f"  👉 [#{rank_idx} Short Pick] Sending {sym} "
+                    f"(Swarm Rating: {cand.get('agents_debate_rating')}/10 | Probability: {cand.get('short_probability_score')}%)..."
+                )
+                try:
+                    send_morning_short_telegram_alert(cand, kite=kite)
+                except Exception as tg_err:
+                    logger.error(f"Error dispatching Morning Short Telegram photo alert for {sym}: {tg_err}")
     # Keep at most top 12 high-conviction developing candidates so the tab stays sniper-focused
     developing_sorted = sorted(
         developing_results,
