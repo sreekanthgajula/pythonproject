@@ -830,7 +830,7 @@ def send_telegram_chart_alert(
     parse_mode: str = "HTML",
     kite: Optional["KiteConnect"] = None,
     require_photo: bool = True,
-    min_rating: float = 7.0,
+    min_rating: Optional[float] = None,
     force_send: bool = False
 ) -> Dict[str, Any]:
     """
@@ -859,6 +859,14 @@ def send_telegram_chart_alert(
         return {"status": "unconfigured", "sent": False, "message": "Missing Telegram credentials."}
 
     clean_sym = symbol.strip().upper().replace(".NS", "")
+
+    # Resolve active conviction threshold from user input / MongoDB if not passed explicitly
+    if min_rating is None:
+        try:
+            from scripts.telegram_settings import get_telegram_threshold
+            min_rating = get_telegram_threshold()
+        except Exception:
+            min_rating = 7.5
 
     # Extract or calculate 6-Agent Swarm Debate Rating
     debate_rating_val = None
@@ -890,8 +898,8 @@ def send_telegram_chart_alert(
     # Filter out unwanted / low-probability alerts if debate rating < 7.0 / 10
     if not force_send and debate_rating_val is not None and float(debate_rating_val) < min_rating:
         logger.info(
-            f"🚫 [SWARM FILTER - UNRIPE] Dropped Telegram alert for {clean_sym}: "
-            f"Consensus Rating {debate_rating_val}/10 < {min_rating}/10."
+            f"🚫 [SWARM FILTER - USER THRESHOLD] Dropped Telegram alert for {clean_sym}: "
+            f"Consensus Rating {debate_rating_val}/10 < user threshold {min_rating}/10."
         )
         return {
             "status": "filtered",

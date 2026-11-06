@@ -2761,6 +2761,47 @@ def get_scheduler_status():
         raise HTTPException(status_code=500, detail=f"Scheduler status fetch error: {e}")
 
 
+# =============================================================================
+# TELEGRAM CONVICTION THRESHOLD SETTINGS ENDPOINTS
+# =============================================================================
+
+class TelegramThresholdRequest(BaseModel):
+    threshold: float
+
+
+@app.get("/api/settings/telegram-threshold")
+def get_telegram_threshold_endpoint():
+    """Returns the current user-configured Telegram Swarm Debate conviction threshold."""
+    try:
+        from scripts.telegram_settings import get_telegram_threshold, get_threshold_label
+        val = get_telegram_threshold()
+        return {
+            "status": "success",
+            "threshold": val,
+            "label": get_threshold_label(val),
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get Telegram threshold: {e}")
+
+
+@app.post("/api/settings/telegram-threshold")
+def set_telegram_threshold_endpoint(req: TelegramThresholdRequest):
+    """Updates the user-configured Telegram Swarm Debate conviction threshold in memory and MongoDB."""
+    try:
+        if req.threshold < 1.0 or req.threshold > 10.0:
+            raise HTTPException(status_code=400, detail="Threshold must be between 1.0 and 10.0")
+        from scripts.telegram_settings import set_telegram_threshold
+        res = set_telegram_threshold(req.threshold)
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update Telegram threshold: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=False)

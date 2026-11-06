@@ -420,11 +420,13 @@ class ZerodhaWebSocketAlertEngine:
                 is_ripe = debate_res.get("is_ripe", False)
                 rating = debate_res.get("agents_debate_rating", 0.0)
 
-                # Gate 1: Only allow alert if Swarm reaches ripe consensus (rating >= 7.0 / 10)
-                if not is_ripe or rating < 7.0:
+                # Gate 1: Only allow alert if Swarm reaches user-configured conviction threshold
+                from scripts.telegram_settings import get_telegram_threshold
+                user_threshold = get_telegram_threshold()
+                if not is_ripe or rating < user_threshold:
                     logger.info(
-                        f"🚫 [SWARM FILTER - UNRIPE] Blocked Telegram alert for {symbol}: "
-                        f"Consensus Rating {rating}/10 < 7.0 | Verdict: {debate_res.get('agents_debate_verdict')} "
+                        f"🚫 [SWARM FILTER - USER THRESHOLD] Blocked Telegram alert for {symbol}: "
+                        f"Consensus Rating {rating}/10 < user threshold {user_threshold}/10 | Verdict: {debate_res.get('agents_debate_verdict')} "
                         f"| Trap Risks: {debate_res.get('trap_reasons')}"
                     )
                     return

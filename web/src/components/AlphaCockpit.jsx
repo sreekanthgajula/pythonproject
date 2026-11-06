@@ -14,7 +14,9 @@ import {
   Layers,
   Award,
   ChevronRight,
-  ExternalLink
+  ExternalLink,
+  Bell,
+  Check
 } from 'lucide-react';
 import './AlphaCockpit.css';
 
@@ -24,6 +26,52 @@ export default function AlphaCockpit({ onNavigateTab }) {
   const [cockpitData, setCockpitData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState('');
+  const [telegramThreshold, setTelegramThreshold] = useState(7.5);
+  const [telegramLabel, setTelegramLabel] = useState('Approved Setup (Balanced Default)');
+  const [savingThreshold, setSavingThreshold] = useState(false);
+  const [thresholdSavedMsg, setThresholdSavedMsg] = useState(false);
+
+  // Fetch active Telegram conviction threshold on mount
+  useEffect(() => {
+    const fetchThreshold = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/settings/telegram-threshold`);
+        if (res.ok) {
+          const d = await res.json();
+          if (d.threshold) {
+            setTelegramThreshold(d.threshold);
+            setTelegramLabel(d.label || '');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch Telegram threshold:', err);
+      }
+    };
+    fetchThreshold();
+  }, []);
+
+  const handleUpdateThreshold = async (newVal) => {
+    const rounded = Math.round(newVal * 10) / 10;
+    setTelegramThreshold(rounded);
+    setSavingThreshold(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/settings/telegram-threshold`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold: rounded })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTelegramLabel(data.label || '');
+        setThresholdSavedMsg(true);
+        setTimeout(() => setThresholdSavedMsg(false), 2500);
+      }
+    } catch (err) {
+      console.error('Failed to update Telegram threshold:', err);
+    } finally {
+      setSavingThreshold(false);
+    }
+  };
 
   const fetchCockpitData = async (showLoading = false) => {
     if (showLoading) setLoading(true);
@@ -103,6 +151,75 @@ export default function AlphaCockpit({ onNavigateTab }) {
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
             <span>{loading ? 'Refreshing...' : 'Refresh'}</span>
           </button>
+        </div>
+      </div>
+
+      {/* TELEGRAM CONVICTION GATE CONTROL CARD */}
+      <div className="telegram-gate-card">
+        <div className="gate-header">
+          <div className="gate-title-block">
+            <div className="gate-icon-badge">
+              <Bell size={20} color="#38bdf8" />
+            </div>
+            <div>
+              <div className="gate-main-title">
+                Telegram Alert Conviction Gate
+                <span className={`gate-pill-badge ${thresholdSavedMsg ? 'saved' : ''}`}>
+                  {thresholdSavedMsg ? '✓ Live Filter Saved!' : `Active: ≥ ${telegramThreshold.toFixed(1)} / 10`}
+                </span>
+              </div>
+              <div className="gate-subtitle">
+                Restricts all Telegram photo alerts strictly to setups scoring at or above your selected Swarm Debate Rating.
+              </div>
+            </div>
+          </div>
+
+          <div className="gate-tier-display">
+            <span className="gate-tier-score">{telegramThreshold.toFixed(1)}</span>
+            <span className="gate-tier-max">/10</span>
+            <div className="gate-tier-desc">{telegramLabel}</div>
+          </div>
+        </div>
+
+        <div className="gate-controls-row">
+          <div className="gate-slider-wrapper">
+            <div className="slider-label-row">
+              <span className="slider-lbl-start">5.0 (Permissive)</span>
+              <span className="slider-lbl-mid">7.5 (Standard)</span>
+              <span className="slider-lbl-end">9.5 (Ultra-Sniper)</span>
+            </div>
+            <input
+              type="range"
+              min="5.0"
+              max="9.5"
+              step="0.5"
+              value={telegramThreshold}
+              onChange={(e) => handleUpdateThreshold(parseFloat(e.target.value))}
+              className="gate-range-slider"
+            />
+          </div>
+
+          <div className="gate-presets-cluster">
+            <span className="preset-chip-title">Quick Presets:</span>
+            {[7.0, 7.5, 8.0, 8.5, 9.0].map((preset) => (
+              <button
+                key={preset}
+                className={`btn-preset-chip ${Math.abs(telegramThreshold - preset) < 0.1 ? 'active' : ''}`}
+                onClick={() => handleUpdateThreshold(preset)}
+                disabled={savingThreshold}
+              >
+                {preset.toFixed(1)} {preset >= 8.5 ? '★' : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="gate-footer-note">
+          <span className="note-dot"></span>
+          <span>
+            <strong>Enforcement Rule:</strong> Any setup scoring below <strong>{telegramThreshold.toFixed(1)}/10</strong> is <strong>silently dropped from Telegram</strong> (no phone vibration).
+            Only setups scoring <strong>≥ {telegramThreshold.toFixed(1)}/10</strong> will dispatch with the full <strong>4-panel Candlestick + Volume + OBV + True Strength</strong> photo chart.
+          </span>
         </div>
       </div>
 

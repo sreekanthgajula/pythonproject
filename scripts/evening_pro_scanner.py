@@ -1364,10 +1364,13 @@ def scan_and_rank_evening_pro_candidates(
     # Enforces Top-3 cap to eliminate message flooding, while ensuring every pick
     # has a full 4-panel Candlestick + Volume + OBV + True Strength (TSI) photo chart.
     if send_telegram and sorted_results:
+        from scripts.telegram_settings import get_telegram_threshold
+        user_threshold = get_telegram_threshold()
         top_btst_picks = [
             r for r in sorted_results
-            if r.get("is_buy_triggered") or (r.get("signal") == "BUY" and r.get("is_pro_buying") and float(r.get("agents_debate_rating", 0.0) or 0.0) >= 7.5)
-        ][:3]  # STRICT CAP: Maximum Top 3 highest conviction picks
+            if (r.get("is_buy_triggered") or (r.get("signal") == "BUY" and r.get("is_pro_buying")))
+            and float(r.get("agents_debate_rating", 0.0) or 0.0) >= user_threshold
+        ][:3]  # STRICT CAP: Maximum Top 3 highest conviction picks meeting user threshold
 
         if top_btst_picks:
             logger.info(f"🚀 [BTST TOP-3 DISPATCH] Dispatching Top {len(top_btst_picks)} Sniper Picks with 4-Panel Charts to Telegram...")

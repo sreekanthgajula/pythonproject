@@ -63,6 +63,24 @@ export default function App() {
   }, []);
 
   const [integritySummary, setIntegritySummary] = useState({ score: 100, status: 'HEALTHY' });
+  const [telegramThreshold, setTelegramThreshold] = useState(8.0);
+
+  useEffect(() => {
+    const fetchThreshold = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/settings/telegram-threshold`);
+        if (res.ok) {
+          const d = await res.json();
+          if (d.threshold) setTelegramThreshold(d.threshold);
+        }
+      } catch (e) {
+        // quiet fallback
+      }
+    };
+    fetchThreshold();
+    const tInterval = setInterval(fetchThreshold, 15000);
+    return () => clearInterval(tInterval);
+  }, []);
 
   useEffect(() => {
     const fetchIntegrityBrief = async () => {
@@ -901,6 +919,19 @@ export default function App() {
           <div className="status-badge">
             <span className={`pulse-dot ${wsStatus.running ? 'online' : ''}`}></span>
             <span>{wsStatus.running ? `KiteTicker Live (${wsStatus.monitored_tokens_count} Tokens)` : 'WebSocket Standby'}</span>
+          </div>
+
+          {/* Telegram Alert Conviction Gate Status Pill */}
+          <div
+            className="status-badge"
+            style={{ cursor: 'pointer', borderColor: 'rgba(56, 189, 248, 0.35)', background: 'rgba(56, 189, 248, 0.08)', gap: '6px' }}
+            onClick={() => setActiveTab('cockpit')}
+            title="Click to view & adjust Telegram Alert Conviction Threshold in Alpha Cockpit"
+          >
+            <Bell size={13} color="#38bdf8" />
+            <span style={{ color: '#38bdf8', fontWeight: 600, fontSize: '0.80rem' }}>
+              Telegram Gate: ≥ {telegramThreshold ? telegramThreshold.toFixed(1) : '8.0'}
+            </span>
           </div>
 
           <button

@@ -1052,10 +1052,12 @@ def scan_and_rank_short_candidates(
     # Enforces Top-2 cap to eliminate spam while ensuring each has a 4-panel
     # Short Candlestick + VWAP + Volume + OBV + True Strength (TSI) photo chart.
     if send_telegram and confirmed_sorted:
+        from scripts.telegram_settings import get_telegram_threshold
+        user_threshold = get_telegram_threshold()
         top_short_picks = [
             c for c in confirmed_sorted
-            if float(c.get("agents_debate_rating", 0.0) or 0.0) >= 7.0 and float(c.get("short_probability_score", 0.0) or 0.0) >= 65.0
-        ][:2]  # STRICT CAP: Maximum Top 2 highest probability breakdown picks
+            if float(c.get("agents_debate_rating", 0.0) or 0.0) >= user_threshold and float(c.get("short_probability_score", 0.0) or 0.0) >= 65.0
+        ][:2]  # STRICT CAP: Maximum Top 2 highest probability breakdown picks meeting user threshold
 
         if top_short_picks:
             logger.info(f"🔻 [SHORT TOP-2 DISPATCH] Dispatching Top {len(top_short_picks)} Short Picks with 4-Panel Charts to Telegram...")
