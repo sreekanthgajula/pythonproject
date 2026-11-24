@@ -447,6 +447,21 @@ class ZerodhaWebSocketAlertEngine:
                     )
                     return
 
+                # Gate 4: 5-Minute vs Daily Multi-Timeframe Ripeness Filter
+                # Prevents sending alerts on 5-minute noise unless the Daily breakout is RIPE!
+                # NOTE: Applies EXCLUSIVELY to individual equity stocks, NOT derivatives.
+                from scripts.chart_generator import is_derivative_symbol
+                is_deriv = is_derivative_symbol(symbol)
+
+                if not is_deriv:
+                    daily_rip = buyer_analysis.get("daily_ripeness", {})
+                    if daily_rip and not daily_rip.get("is_ripe", False):
+                        logger.info(
+                            f"🚫 [DAILY RIPE FILTER BLOCKED] Suppressed Telegram alert for stock {symbol}: "
+                            f"5m trigger fired but Daily chart is NOT ripe ({daily_rip.get('summary')}). Discarded as intraday noise."
+                        )
+                        return
+
                 title_prefix = "⚡ TRUE DARVAS BOX BREAKOUT" if is_darvas else f"⚡ GTT 1% BREAKOUT ({tf.upper()})"
                 tg_text = (
                     f"<b>{title_prefix} ALERT</b> - <b>#{symbol}</b>\n\n"
@@ -474,27 +489,39 @@ class ZerodhaWebSocketAlertEngine:
                         f"• Rating: <b>{buyer_score}/10</b> | Candle: <b>{c_candle}</b> | Volume: <b>{c_vol}</b>"
                     )
 
-                # Generate 5m Candlestick + Volume + OBV + True Strength (TSI) chart
-                chart_buf = None
+                # Generate Candlestick charts (Volume + OBV + TSI)
+                # For individual equity stocks: BOTH 5m and Daily charts are generated.
+                # For derivatives: ONLY the 5m chart is generated (Daily chart bypassed).
+                chart_buf_5m = None
+                chart_buf_daily = None
                 deb_rating_str = f" • Agents Debate {rating}/10"
                 try:
-                    chart_buf = generate_5min_chart_buffer(
+                    from scripts.chart_generator import generate_5min_chart_buffer, generate_daily_chart_buffer
+                    chart_buf_5m = generate_5min_chart_buffer(
                         symbol=symbol,
                         trigger_price=trigger_price,
                         title_suffix=f" • GTT Breakout{deb_rating_str}"
                     )
+                    if not is_deriv:
+                        chart_buf_daily = generate_daily_chart_buffer(
+                            symbol=symbol,
+                            trigger_price=trigger_price,
+                            title_suffix=f" • GTT Breakout{deb_rating_str}"
+                        )
                 except Exception as c_err:
-                    logger.warning(f"Error generating 5m chart for {symbol}: {c_err}")
+                    logger.warning(f"Error generating charts for {symbol}: {c_err}")
 
                 res = send_telegram_chart_alert(
                     symbol=symbol,
                     message_text=tg_text,
-                    chart_buffer=chart_buf,
+                    chart_buffer=chart_buf_5m,
+                    daily_chart_buffer=chart_buf_daily,
                     trigger_price=trigger_price,
                     parse_mode="HTML"
                 )
                 if res.get("sent"):
-                    logger.info(f"⚡ [TELEGRAM] Successfully dispatched RIPE GTT Alert with 4-Panel 5m Chart for {symbol}!")
+                    chart_type = "DUAL CHARTS (5m + Daily)" if res.get("dual_charts") else "5m CHART"
+                    logger.info(f"⚡ [TELEGRAM] Successfully dispatched RIPE GTT Alert with {chart_type} for {symbol}!")
                 else:
                     logger.error(f"Telegram dispatch failed for {symbol}: {res.get('error') or res.get('message')}")
             else:

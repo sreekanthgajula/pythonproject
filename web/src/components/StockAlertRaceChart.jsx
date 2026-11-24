@@ -15,9 +15,9 @@ import {
 
 const API_BASE_URL = '/api';
 
-export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = false }) {
+export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = false, threeDaysOnly = false }) {
   const [activeMode, setActiveMode] = useState(
-    pastWeekOnly ? 'past_week' : todayOnly ? 'today' : 'all'
+    pastWeekOnly ? 'past_week' : todayOnly ? 'today' : 'three_days'
   );
   const [raceData, setRaceData] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -33,8 +33,8 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
   useEffect(() => {
     if (pastWeekOnly) setActiveMode('past_week');
     else if (todayOnly) setActiveMode('today');
-    else setActiveMode('all');
-  }, [todayOnly, pastWeekOnly]);
+    else setActiveMode('three_days');
+  }, [todayOnly, pastWeekOnly, threeDaysOnly]);
 
   const fetchRaceLeaderboard = async (targetMode = activeMode, forceRefresh = false) => {
     // If cached result exists and not forcing refresh, serve immediately for 0ms snappy response
@@ -50,11 +50,13 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
     }
 
     try {
-      let endpoint = `${API_BASE_URL}/race/daily?today_only=false`;
+      let endpoint = `${API_BASE_URL}/race/daily?three_days_only=true`;
       if (targetMode === 'today') {
         endpoint = `${API_BASE_URL}/race/daily?today_only=true`;
       } else if (targetMode === 'past_week') {
         endpoint = `${API_BASE_URL}/race/daily?past_week_only=true`;
+      } else if (targetMode === 'three_days' || targetMode === 'all') {
+        endpoint = `${API_BASE_URL}/race/daily?three_days_only=true`;
       }
       if (forceRefresh) {
         endpoint += '&force_refresh=true';
@@ -117,8 +119,8 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                     pctGain: newPct,
                     positive_change_pct: newPct,
                     daily_change_pct: activeModeRef.current === 'today' ? newPct : item.daily_change_pct,
+                    three_day_change_pct: activeModeRef.current === 'three_days' ? newPct : item.three_day_change_pct,
                     weekly_change_pct: activeModeRef.current === 'past_week' ? newPct : item.weekly_change_pct,
-                    monthly_change_pct: activeModeRef.current === 'all' ? newPct : item.monthly_change_pct,
                   };
                 }
                 return item;
@@ -142,14 +144,14 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
     } else if (activeMode === 'past_week') {
       return stock.weekly_change_pct !== undefined ? stock.weekly_change_pct : (stock.positive_change_pct || 0);
     } else {
-      return stock.monthly_change_pct !== undefined ? stock.monthly_change_pct : (stock.positive_change_pct || stock.weekly_change_pct || 0);
+      return stock.three_day_change_pct !== undefined ? stock.three_day_change_pct : (stock.positive_change_pct || 0);
     }
   };
 
   const getTimeframeLabel = () => {
     if (activeMode === 'today') return 'Daily';
     if (activeMode === 'past_week') return 'Weekly';
-    return 'Monthly';
+    return '3-Day';
   };
 
   // Filter & sort race standings strictly based on positive percentage change in selected timeframe
@@ -184,8 +186,10 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
             <div className="race-icon-box">
               {activeMode === 'past_week' ? (
                 <TrendingUp size={28} color="#10b981" />
+              ) : activeMode === 'today' ? (
+                <Flame size={28} color="#f59e0b" />
               ) : (
-                <Trophy size={28} color="#f59e0b" />
+                <Zap size={28} color="#38bdf8" />
               )}
             </div>
             <div>
@@ -194,14 +198,14 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
                   ? "🏎️ Today's Positive % Change Grand Prix"
                   : activeMode === 'past_week'
                   ? "📈 Week's Positive % Change Grand Prix"
-                  : "🏆 Monthly Positive % Change Grand Prix"}
+                  : "⚡ 3-Day Positive % Change Grand Prix"}
               </h2>
               <p>
                 {activeMode === 'today'
                   ? "Live Stock Race Ranked Strictly by Today's Positive % Price Gain (>0% Daily Growth)"
                   : activeMode === 'past_week'
                   ? "Live Stock Race Ranked Strictly by Past Week's Positive % Price Gain (>0% 7-Day Growth)"
-                  : "Live Stock Race Ranked Strictly by Monthly / Timeframe Positive % Price Gain (>0% Growth)"}
+                  : "Live Stock Race Ranked Strictly by Past 3 Days' Positive % Price Gain (>0% 3-Day Momentum)"}
                 {lastUpdated && <span style={{ marginLeft: '10px', opacity: 0.7, fontSize: '0.8rem' }}>• Updated: {lastUpdated}</span>}
               </p>
             </div>
@@ -218,19 +222,19 @@ export default function StockAlertRaceChart({ todayOnly = false, pastWeekOnly = 
               </button>
 
               <button
+                className={`race-mode-pill ${activeMode === 'three_days' ? 'active' : ''}`}
+                onClick={() => setActiveMode('three_days')}
+              >
+                <Zap size={13} color="#38bdf8" />
+                <span>3 Days</span>
+              </button>
+
+              <button
                 className={`race-mode-pill ${activeMode === 'past_week' ? 'active' : ''}`}
                 onClick={() => setActiveMode('past_week')}
               >
                 <TrendingUp size={13} />
                 <span>Weekly</span>
-              </button>
-
-              <button
-                className={`race-mode-pill ${activeMode === 'all' ? 'active' : ''}`}
-                onClick={() => setActiveMode('all')}
-              >
-                <Trophy size={13} />
-                <span>Monthly</span>
               </button>
             </div>
 

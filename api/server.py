@@ -118,10 +118,12 @@ def _get_stock_returns_cached(stock_symbols: list) -> dict:
             if sym:
                 returns_map[sym] = {
                     "daily_change_pct": float(doc.get("daily_change_pct") or 0.0),
+                    "three_day_change_pct": float(doc.get("three_day_change_pct") or 0.0),
                     "weekly_change_pct": float(doc.get("weekly_change_pct") or 0.0),
                     "monthly_change_pct": float(doc.get("monthly_change_pct") or 0.0),
                     "ltp": float(doc.get("ltp") or 0.0),
                     "prev_close": float(doc.get("prev_close") or 0.0),
+                    "three_day_ago_close": float(doc.get("three_day_ago_close") or 0.0),
                     "week_ago_close": float(doc.get("week_ago_close") or 0.0),
                     "month_ago_close": float(doc.get("month_ago_close") or 0.0),
                 }
@@ -1504,6 +1506,11 @@ def get_dashboard_summary():
         except Exception:
             counts["evening_pro"] = 0
 
+        try:
+            counts["coiling"] = dm.db["weekly_coiling_candidates"].count_documents({})
+        except Exception:
+            counts["coiling"] = 0
+
         # Zerodha status (cached 30s)
         z_info = {"configured": False, "status": "no_credentials"}
         try:
@@ -1997,12 +2004,13 @@ def delete_batch_stock_ratings(timeframe: str, req: BatchDeleteRequest):
         raise HTTPException(status_code=500, detail=f"Failed to batch delete from {tf_clean} table: {e}")
 
 @app.get("/api/race/daily")
-def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = False, force_refresh: bool = False):
+def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = False, three_days_only: bool = False, force_refresh: bool = False):
     """
     Returns the Stock Alert Race leaderboard.
     Aggregates breakout alerts across monthly, weekly, daily, and manual tables.
     - If today_only=True: strictly filters to stocks updated or alerted TODAY in IST.
     - If past_week_only=True: strictly filters to stocks whose market price INCREASED (>0%) over the past week (past 7 days).
+    - If three_days_only=True (default when not today/week): strictly filters to stocks whose market price INCREASED (>0%) over the past 3 days.
     - If force_refresh=True: clears returns cache and triggers immediate re-fetch from Zerodha.
     """
     try:
@@ -2110,17 +2118,20 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
         for sym, item in stocks_map.items():
             ret = returns_map.get(sym, {})
             daily_gain = float(ret.get("daily_change_pct", 0.0) or 0.0)
+            three_day_gain = float(ret.get("three_day_change_pct", 0.0) or 0.0)
             weekly_gain = float(ret.get("weekly_change_pct", 0.0) or 0.0)
             monthly_gain = float(ret.get("monthly_change_pct", 0.0) or 0.0)
 
             item["daily_change_pct"] = daily_gain
+            item["three_day_change_pct"] = three_day_gain
             item["weekly_change_pct"] = weekly_gain
             item["monthly_change_pct"] = monthly_gain
             item["ltp"] = float(ret.get("ltp") or item.get("recent_high") or 0.0)
             item["prev_close"] = float(ret.get("prev_close") or 0.0)
+            item["three_day_ago_close"] = float(ret.get("three_day_ago_close") or 0.0)
             item["week_ago_close"] = float(ret.get("week_ago_close") or 0.0)
             item["month_ago_close"] = float(ret.get("month_ago_close") or 0.0)
-            item["source_timeframe"] = item.get("timeframe", "MONTHLY")
+            item["source_timeframe"] = item.get("timeframe", "DAILY")
 
             # Integrate live streaming WebSocket tick if fresher than cache
             ws_tick = ws_ticks.get(sym)
@@ -2130,6 +2141,9 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
                 if item.get("prev_close", 0) > 0:
                     daily_gain = round(((live_ltp - item["prev_close"]) / item["prev_close"]) * 100.0, 2)
                     item["daily_change_pct"] = daily_gain
+                if item.get("three_day_ago_close", 0) > 0:
+                    three_day_gain = round(((live_ltp - item["three_day_ago_close"]) / item["three_day_ago_close"]) * 100.0, 2)
+                    item["three_day_change_pct"] = three_day_gain
                 if item.get("week_ago_close", 0) > 0:
                     weekly_gain = round(((live_ltp - item["week_ago_close"]) / item["week_ago_close"]) * 100.0, 2)
                     item["weekly_change_pct"] = weekly_gain
@@ -2149,7 +2163,7 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             # Select the exact timeframe's percentage change:
             # - Daily tab (today_only=True): strictly current day % increase (daily_gain > 0)
             # - Weekly tab (past_week_only=True): strictly past week % increase (weekly_gain > 0)
-            # - Monthly tab (default): strictly past month % increase (monthly_gain > 0)
+            # - 3-Days tab (three_days_only=True or default): strictly past 3 days % increase (three_day_gain > 0)
             if today_only:
                 target_pct = daily_gain
                 item["race_mode"] = "DAILY"
@@ -2159,9 +2173,9 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
                 item["race_mode"] = "WEEKLY"
                 item["baseline_price"] = item["week_ago_close"]
             else:
-                target_pct = monthly_gain
-                item["race_mode"] = "MONTHLY"
-                item["baseline_price"] = item["month_ago_close"]
+                target_pct = three_day_gain
+                item["race_mode"] = "THREE_DAYS"
+                item["baseline_price"] = item.get("three_day_ago_close") or item["prev_close"]
 
             item["positive_change_pct"] = target_pct
             item["pctGain"] = target_pct
@@ -2188,6 +2202,7 @@ def get_daily_stock_alert_race(today_only: bool = False, past_week_only: bool = 
             "date": today_date_str,
             "today_only": today_only,
             "past_week_only": past_week_only,
+            "three_days_only": (not today_only and not past_week_only) or three_days_only,
             "zerodha_connected": zerodha_connected,
             "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
             "count": len(filtered_items),
@@ -2205,6 +2220,12 @@ def get_todays_stock_alert_race(force_refresh: bool = False):
 def get_past_week_stock_alert_race(force_refresh: bool = False):
     """Returns Stock Alert Race leaderboard strictly considering stocks that INCREASED over the past week."""
     return get_daily_stock_alert_race(past_week_only=True, force_refresh=force_refresh)
+
+
+@app.get("/api/race/three-days")
+def get_three_days_stock_alert_race(force_refresh: bool = False):
+    """Returns Stock Alert Race leaderboard strictly considering stocks that INCREASED over the past 3 days."""
+    return get_daily_stock_alert_race(three_days_only=True, force_refresh=force_refresh)
 
 @app.get("/api/race/ticks")
 def get_live_race_ticks():
@@ -2537,6 +2558,70 @@ def trigger_single_evening_candidate_alert(symbol: str):
         raise HTTPException(status_code=500, detail=f"Failed to send Telegram alert for {symbol}: {e}")
 
 
+@app.get("/api/coiling-candidates")
+def get_coiling_candidates_endpoint():
+    """
+    Retrieves high-probability Weekly Pre-Breakout Coiling stock candidates
+    from MongoDB collection 'weekly_coiling_candidates' ranked by coiling_score.
+    """
+    try:
+        from data_manager import DataManager
+        dm = DataManager()
+        col = dm.db["weekly_coiling_candidates"]
+        candidates = list(col.find({}, {"_id": 0}).sort("coiling_score", -1))
+        return {"status": "success", "count": len(candidates), "candidates": candidates}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch weekly coiling candidates: {e}")
+
+
+@app.post("/api/scan-coiling-candidates")
+def trigger_coiling_candidates_scan(background_tasks: BackgroundTasks):
+    """
+    Triggers an asynchronous scan for Weekly Pre-Breakout Coiling setups
+    and updates MongoDB 'weekly_coiling_candidates'.
+    """
+    try:
+        from scripts.weekly_coiling_scanner import scan_and_rank_weekly_coiling_candidates
+        background_tasks.add_task(scan_and_rank_weekly_coiling_candidates, send_telegram=True)
+        return {"status": "success", "message": "Weekly pre-breakout coiling candidate scan initiated in background."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to trigger coiling candidate scan: {e}")
+
+
+@app.post("/api/coiling-candidates/{symbol}/alert")
+def trigger_single_coiling_candidate_alert(symbol: str):
+    """
+    Dispatches a Weekly Coiling Pre-Breakout alert to Telegram for the specified candidate symbol.
+    """
+    try:
+        from scripts.weekly_coiling_scanner import analyze_weekly_coiling_candidate, send_weekly_coiling_telegram_alert
+        cand = analyze_weekly_coiling_candidate(symbol)
+        if not cand:
+            raise HTTPException(status_code=404, detail=f"Could not analyze coiling candidate for {symbol}")
+        res = send_weekly_coiling_telegram_alert(cand)
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "result": res,
+            "candidate": cand
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send Telegram alert for {symbol}: {e}")
+
+
+@app.post("/api/coiling-candidates/check-ignitions")
+def check_coiling_ignitions_endpoint(send_telegram: bool = True):
+    """
+    Intraday Ignition Sentinel: Checks live LTP against shelf high for all coiling candidates
+    and dispatches immediate breakout alerts if testing or breaking the ceiling.
+    """
+    try:
+        from scripts.weekly_coiling_scanner import check_intraday_coiling_ignitions
+        res = check_intraday_coiling_ignitions(send_telegram=send_telegram)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check coiling ignitions: {e}")
+
 
 @app.get("/api/market-timing")
 def get_market_timing_endpoint():
@@ -2579,15 +2664,16 @@ class TelegramAlertRequest(BaseModel):
 @app.post("/api/send-telegram-chart-alert")
 def send_telegram_chart_alert_endpoint(req: TelegramAlertRequest):
     """
-    Dispatches a Telegram alert with the in-memory 5-minute chart screenshot attached.
+    Dispatches a Telegram alert with in-memory Dual Candlestick Charts (5-Minute + Daily)
+    with Volume, OBV, and True Strength Index (TSI) attached as an album.
     """
     try:
         from scripts.chart_generator import send_telegram_chart_alert
         clean_symbol = req.symbol.strip().upper().replace(".NS", "")
         msg = req.message or (
-            f"⚡ <b>MANUAL BREAKOUT ALERT</b> - <b>{clean_symbol}</b>\n\n"
+            f"⚡ <b>BREAKOUT ALERT</b> - <b>#{clean_symbol}</b>\n\n"
             f"📈 <b>Trigger Price</b>: ₹{req.trigger_price or 0.0:,.2f}\n"
-            f"📊 <b>5m Candlestick Chart</b> attached with Volume, OBV, and TSI.\n"
+            f"📊 <b>Dual Candlestick Charts Attached</b>: 5-Minute + Daily with Volume, OBV, and TSI.\n"
             f"⏰ <i>Dispatched from TradingAgents Engine</i>"
         )
         res = send_telegram_chart_alert(

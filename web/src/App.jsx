@@ -25,6 +25,7 @@ import StockAlertRaceChart from './components/StockAlertRaceChart';
 import DerivativesSpeedometer from './components/DerivativesSpeedometer';
 import MorningShortScanner from './components/MorningShortScanner';
 import EveningProScanner from './components/EveningProScanner';
+import WeeklyCoilingScanner from './components/WeeklyCoilingScanner';
 import IntegrityManager from './components/IntegrityManager';
 import AlphaCockpit from './components/AlphaCockpit';
 
@@ -1164,7 +1165,7 @@ export default function App() {
           </nav>
 
           {/* Quick Sorting Pills & Delete All Button (Hidden on Active GTTS, Race, Morning Short & Evening Pro tabs) */}
-          {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && (
+          {activeTab !== 'active_gtts' && activeTab !== 'gtts' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && activeTab !== 'coiling' && (
             <div className="sort-controls">
               {activeTab === 'manual' && (
                 <button
@@ -1322,7 +1323,18 @@ export default function App() {
               <span className="tab-badge" style={{ background: '#10b981', color: '#fff' }}>{tabCounts.evening_pro || 0}</span>
             </button>
 
-            {/* 🛡️ TAB 10: PLATFORM INTEGRITY MANAGER */}
+            {/* ⚡ TAB 10: WEEKLY COILING PRE-BREAKOUT SCANNER */}
+            <button
+              className={`tab-btn ${activeTab === 'coiling' ? 'active-pro' : ''}`}
+              onClick={() => setActiveTab('coiling')}
+              style={{ borderLeft: '1px solid rgba(255, 255, 255, 0.1)' }}
+            >
+              <Zap size={16} color="#38bdf8" />
+              <span>⚡ Weekly Coiling (VCP)</span>
+              <span className="tab-badge" style={{ background: '#38bdf8', color: '#000', fontWeight: 800 }}>{tabCounts.coiling || 0}</span>
+            </button>
+
+            {/* 🛡️ TAB 11: PLATFORM INTEGRITY MANAGER */}
             <button
               className={`tab-btn ${activeTab === 'integrity' ? 'active' : ''}`}
               onClick={() => setActiveTab('integrity')}
@@ -1373,7 +1385,7 @@ export default function App() {
           </nav>
         </div>
 
-        {activeTab !== 'cockpit' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && activeTab !== 'integrity' && (
+        {activeTab !== 'cockpit' && activeTab !== 'race' && activeTab !== 'todays_race' && activeTab !== 'past_week_race' && activeTab !== 'morning_short' && activeTab !== 'evening_pro' && activeTab !== 'coiling' && activeTab !== 'integrity' && (
           <div className="search-box">
             <Search className="search-icon" size={16} />
             <input
@@ -1396,6 +1408,9 @@ export default function App() {
       ) : activeTab === 'evening_pro' ? (
         /* 🚀 EVENING PROFESSIONAL BUYING (BTST) SCANNER VIEW */
         <EveningProScanner />
+      ) : activeTab === 'coiling' ? (
+        /* ⚡ WEEKLY COILING PRE-BREAKOUT SCANNER VIEW */
+        <WeeklyCoilingScanner />
       ) : activeTab === 'morning_short' ? (
         /* 🚨 MORNING SHORT & FADE REVERSAL SCANNER VIEW */
         <MorningShortScanner />

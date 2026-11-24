@@ -115,13 +115,14 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
             force
             or not existing
             or existing.get("date") != today_str
+            or float(existing.get("three_day_ago_close") or 0.0) <= 0
             or float(existing.get("week_ago_close") or 0.0) <= 0
-            or float(existing.get("month_ago_close") or 0.0) <= 0
             or float(existing.get("prev_close") or 0.0) <= 0
             or float(existing.get("ltp") or 0.0) <= 0
         )
 
         prev_close = q_prev
+        three_day_ago_close = float(existing.get("three_day_ago_close") or 0.0) if existing else 0.0
         week_ago_close = float(existing.get("week_ago_close") or 0.0) if existing else 0.0
         month_ago_close = float(existing.get("month_ago_close") or 0.0) if existing else 0.0
 
@@ -147,14 +148,17 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
                     if ltp <= 0:
                         ltp = float(candles[-1]["close"])
 
-                    # 1 week ago close (5 trading days back) and 1 month ago close (21 trading days back)
-                    if is_today_candle and len(candles) >= 6:
-                        week_idx = -6
+                    # 3 days ago close (3 trading days back), 1 week ago (5 trading days back)
+                    if is_today_candle and len(candles) >= 4:
+                        three_day_idx = -4
+                        week_idx = -6 if len(candles) >= 6 else 0
                         month_idx = -22 if len(candles) >= 22 else 0
                     else:
+                        three_day_idx = -4 if len(candles) >= 4 else 0
                         week_idx = -6 if len(candles) >= 6 else 0
                         month_idx = -22 if len(candles) >= 22 else 0
 
+                    three_day_ago_close = float(candles[three_day_idx]["close"])
                     week_ago_close = float(candles[week_idx]["close"])
                     month_ago_close = float(candles[month_idx]["close"])
                 elif candles:
@@ -162,6 +166,7 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
                         prev_close = float(candles[-1]["close"])
                     if ltp <= 0:
                         ltp = prev_close
+                    three_day_ago_close = prev_close
                     week_ago_close = prev_close
                     month_ago_close = prev_close
             except Exception as he:
@@ -177,6 +182,10 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
             ltp = float(existing["ltp"])
         if ltp <= 0 and prev_close > 0:
             ltp = prev_close
+        if three_day_ago_close <= 0 and existing and float(existing.get("three_day_ago_close") or 0.0) > 0:
+            three_day_ago_close = float(existing["three_day_ago_close"])
+        if three_day_ago_close <= 0:
+            three_day_ago_close = prev_close
         if week_ago_close <= 0 and existing and float(existing.get("week_ago_close") or 0.0) > 0:
             week_ago_close = float(existing["week_ago_close"])
         if week_ago_close <= 0:
@@ -191,8 +200,9 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
             logger.warning(f"Skipping cache update for {sym}: price not available (ltp={ltp}, prev_close={prev_close})")
             continue
 
-        # Compute percentage returns
+        # Compute percentage returns for 1 Day, 3 Days, and 1 Week (Replacing Month with 3-Days)
         daily_pct = round(((ltp - prev_close) / prev_close) * 100.0, 2) if prev_close > 0 else 0.0
+        three_day_pct = round(((ltp - three_day_ago_close) / three_day_ago_close) * 100.0, 2) if three_day_ago_close > 0 else 0.0
         weekly_pct = round(((ltp - week_ago_close) / week_ago_close) * 100.0, 2) if week_ago_close > 0 else 0.0
         monthly_pct = round(((ltp - month_ago_close) / month_ago_close) * 100.0, 2) if month_ago_close > 0 else 0.0
 
@@ -200,9 +210,11 @@ def sync_stock_returns_cache(kite=None, force: bool = False) -> dict:
             "symbol": sym,
             "ltp": ltp,
             "prev_close": prev_close,
+            "three_day_ago_close": three_day_ago_close,
             "week_ago_close": week_ago_close,
             "month_ago_close": month_ago_close,
             "daily_change_pct": daily_pct,
+            "three_day_change_pct": three_day_pct,
             "weekly_change_pct": weekly_pct,
             "monthly_change_pct": monthly_pct,
             "date": today_str,

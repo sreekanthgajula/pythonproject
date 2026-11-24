@@ -166,24 +166,30 @@ const DerivativesSpeedometer = ({
   const dailyScore = data?.sentiment_score ?? 0;
   const dailyNeedle = data?.needle_angle ?? 0;
   const dailyVerdict = data?.day_verdict || "NEUTRAL DAY ⚖️";
+  const dailyChange = data?.daily?.change_pct ?? data?.day_change_pct;
 
-  // Weekly Metrics
+  // Weekly Metrics (Decoupled 1-Week Trend)
   const weeklyData = data?.weekly || {};
-  const weeklyScore = weeklyData.sentiment_score ?? Math.min(100, Math.max(-100, dailyScore + 10));
-  const weeklyNeedle = weeklyData.needle_angle ?? Math.min(90, Math.max(-90, dailyNeedle + 9));
+  const weeklyScore = weeklyData.sentiment_score ?? 0;
+  const weeklyNeedle = weeklyData.needle_angle ?? 0;
   const weeklyVerdict = weeklyData.verdict || (weeklyScore >= 25 ? "BULL WEEK 🐂" : weeklyScore <= -25 ? "BEAR WEEK 🐻" : "NEUTRAL WEEK ⚖️");
-  const weeklyPcr = weeklyData.pcr ?? (data?.pcr ? +(data.pcr * 1.05).toFixed(2) : 1.15);
-  const weeklyCall = weeklyData.max_call_strike || (data?.max_call_strike ? data.max_call_strike + 200 : 25200);
-  const weeklyPut = weeklyData.max_put_strike || (data?.max_put_strike ? data.max_put_strike - 200 : 24600);
+  const weeklyPcr = weeklyData.pcr ?? 1.0;
+  const weeklyCall = weeklyData.max_call_strike || "N/A";
+  const weeklyPut = weeklyData.max_put_strike || "N/A";
+  const weeklyChange = weeklyData.change_pct;
+  const above20Ema = weeklyData.above_20_ema ?? (weeklyScore >= 0);
 
-  // Monthly Metrics
+  // Monthly Metrics (Decoupled 1-Month Macro)
   const monthlyData = data?.monthly || {};
-  const monthlyScore = monthlyData.sentiment_score ?? Math.min(100, Math.max(-100, dailyScore + 20));
-  const monthlyNeedle = monthlyData.needle_angle ?? Math.min(90, Math.max(-90, dailyNeedle + 18));
+  const monthlyScore = monthlyData.sentiment_score ?? 0;
+  const monthlyNeedle = monthlyData.needle_angle ?? 0;
   const monthlyVerdict = monthlyData.verdict || (monthlyScore >= 25 ? "BULL MONTH 🐂" : monthlyScore <= -25 ? "BEAR MONTH 🐻" : "NEUTRAL MONTH ⚖️");
-  const monthlyPcr = monthlyData.pcr ?? (data?.pcr ? +(data.pcr * 1.12).toFixed(2) : 1.25);
-  const monthlyCall = monthlyData.max_call_strike || (data?.max_call_strike ? data.max_call_strike + 500 : 25500);
-  const monthlyPut = monthlyData.max_put_strike || (data?.max_put_strike ? data.max_put_strike - 500 : 24000);
+  const monthlyPcr = monthlyData.pcr ?? 1.0;
+  const monthlyCall = monthlyData.max_call_strike || "N/A";
+  const monthlyPut = monthlyData.max_put_strike || "N/A";
+  const monthlyChange = monthlyData.change_pct;
+  const above50Sma = monthlyData.above_50_sma ?? (monthlyScore >= 0);
+  const above200Sma = monthlyData.above_200_sma ?? (monthlyScore >= 0);
 
   return (
     <div className="derivatives-analyst-card">
@@ -252,9 +258,14 @@ const DerivativesSpeedometer = ({
           supLabel="Day Sup"
           supVal={data?.max_put_strike || "N/A"}
           extraBadge={
-            data?.predicted_nifty_change ? (
-              <span>Predicted Move: <span style={{ color: data.predicted_nifty_change.includes('+') ? '#10b981' : data.predicted_nifty_change.includes('-') ? '#f43f5e' : '#f59e0b' }}>{data.predicted_nifty_change}</span></span>
-            ) : null
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }}>
+              {dailyChange !== undefined && (
+                <span>1-D Return: <strong style={{ color: dailyChange >= 0 ? '#10b981' : '#f43f5e' }}>{dailyChange > 0 ? `+${dailyChange}%` : `${dailyChange}%`}</strong></span>
+              )}
+              {data?.predicted_nifty_change && (
+                <span>Pred Move: <strong style={{ color: data.predicted_nifty_change.includes('+') ? '#10b981' : data.predicted_nifty_change.includes('-') ? '#f43f5e' : '#f59e0b' }}>{data.predicted_nifty_change}</strong></span>
+              )}
+            </div>
           }
         />
 
@@ -273,7 +284,14 @@ const DerivativesSpeedometer = ({
           resVal={weeklyCall}
           supLabel="Wk Sup"
           supVal={weeklyPut}
-          extraBadge={<span>1-W Structure: <span style={{ color: weeklyScore >= 0 ? '#10b981' : '#f43f5e' }}>{weeklyScore >= 0 ? 'Bullish Holding' : 'Under Pressure'}</span></span>}
+          extraBadge={
+            <span>
+              {weeklyChange !== undefined ? (
+                <>1-W Return: <strong style={{ color: weeklyChange >= 0 ? '#10b981' : '#f43f5e' }}>{weeklyChange > 0 ? `+${weeklyChange}%` : `${weeklyChange}%`}</strong> • </>
+              ) : null}
+              <span style={{ color: above20Ema ? '#10b981' : '#f43f5e' }}>{above20Ema ? 'Above 20 EMA' : 'Below 20 EMA'}</span>
+            </span>
+          }
         />
 
         {/* Monthly Speedometer */}
@@ -291,7 +309,14 @@ const DerivativesSpeedometer = ({
           resVal={monthlyCall}
           supLabel="Month Sup"
           supVal={monthlyPut}
-          extraBadge={<span>Macro Regime: <span style={{ color: monthlyScore >= 0 ? '#10b981' : '#f43f5e' }}>{monthlyScore >= 0 ? 'Above 50d/200d SMA' : 'Below Key SMAs'}</span></span>}
+          extraBadge={
+            <span>
+              {monthlyChange !== undefined ? (
+                <>1-M Return: <strong style={{ color: monthlyChange >= 0 ? '#10b981' : '#f43f5e' }}>{monthlyChange > 0 ? `+${monthlyChange}%` : `${monthlyChange}%`}</strong> • </>
+              ) : null}
+              <span style={{ color: above50Sma ? '#10b981' : '#f43f5e' }}>{above50Sma ? (above200Sma ? 'Above 50d/200d SMA' : 'Above 50d SMA') : 'Below 50d SMA'}</span>
+            </span>
+          }
         />
       </div>
 

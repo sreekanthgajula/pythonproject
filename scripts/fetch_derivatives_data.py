@@ -72,48 +72,86 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
             df = pd.DataFrame(instruments)
             nifty_opts = df[(df['name'] == 'NIFTY') & (df['segment'] == 'NFO-OPT')].copy()
             
-            today = get_today_ist()
-            expiries = sorted([exp for exp in nifty_opts['expiry'].unique() if exp >= today])
-            target_expiry = expiries[0] if expiries else None
+            today_str = get_ist_date_str()
+            today_d = datetime.datetime.strptime(today_str, "%Y-%m-%d").date()
+            expiries = sorted([exp for exp in nifty_opts['expiry'].unique() if str(exp)[:10] >= today_str])
             
-            if target_expiry and nifty_spot > 0:
-                near_opts = nifty_opts[
-                    (nifty_opts['expiry'] == target_expiry) & 
-                    (nifty_opts['strike'].between(nifty_spot - 1500, nifty_spot + 1500))
-                ]
-                symbols = [f"NFO:{s}" for s in near_opts['tradingsymbol'].tolist()]
+            near_exp = expiries[0] if expiries else None
+            week_exp = expiries[min(1, len(expiries) - 1)] if len(expiries) > 1 else near_exp
+            
+            next_month_expiries = [e for e in expiries if 14 <= (datetime.datetime.strptime(str(e)[:10], "%Y-%m-%d").date() - today_d).days <= 45]
+            month_exp = next_month_expiries[-1] if next_month_expiries else (expiries[min(3, len(expiries) - 1)] if len(expiries) > 1 else near_exp)
+            
+            # Fetch Nifty 50 Daily Historical Candles for Decoupled Moving Averages and Multi-Day Returns
+            day_change_pct = 0.0
+            week_change_pct = 0.0
+            month_change_pct = 0.0
+            prev_close = nifty_spot
+            week_ago_close = nifty_spot
+            month_ago_close = nifty_spot
+            ema_5 = nifty_spot
+            ema_20 = nifty_spot
+            sma_50 = nifty_spot
+            sma_200 = nifty_spot
+            
+            try:
+                to_d = datetime.datetime.now()
+                from_d = to_d - datetime.timedelta(days=365)
+                candles = kite.historical_data(256265, from_d, to_d, "day")
+                if candles:
+                    df_c = pd.DataFrame(candles)
+                    closes = df_c['close'].tolist()
+                    prev_close = closes[-2] if len(closes) >= 2 else (closes[-1] if closes else nifty_spot)
+                    week_ago_close = closes[-6] if len(closes) >= 6 else (closes[0] if closes else prev_close)
+                    month_ago_close = closes[-22] if len(closes) >= 22 else (closes[0] if closes else week_ago_close)
+                    
+                    sma_50 = float(df_c['close'].rolling(50).mean().iloc[-1]) if len(df_c) >= 50 else float(df_c['close'].mean())
+                    sma_200 = float(df_c['close'].rolling(200).mean().iloc[-1]) if len(df_c) >= 200 else sma_50
+                    ema_5 = float(df_c['close'].ewm(span=5, adjust=False).mean().iloc[-1])
+                    ema_20 = float(df_c['close'].ewm(span=20, adjust=False).mean().iloc[-1])
+                    
+                    if prev_close > 0:
+                        day_change_pct = round(((nifty_spot - prev_close) / prev_close) * 100.0, 2)
+                    if week_ago_close > 0:
+                        week_change_pct = round(((nifty_spot - week_ago_close) / week_ago_close) * 100.0, 2)
+                    if month_ago_close > 0:
+                        month_change_pct = round(((nifty_spot - month_ago_close) / month_ago_close) * 100.0, 2)
+            except Exception as he:
+                print(f"[DERIVATIVES] Nifty 50 historical candles fetch note: {he}")
+            
+            # Batch Quote Options across Near, Weekly, and Monthly expiries
+            if near_exp and nifty_spot > 0:
+                near_opts = nifty_opts[(nifty_opts['expiry'] == near_exp) & (nifty_opts['strike'].between(nifty_spot - 1500, nifty_spot + 1500))]
+                week_opts = nifty_opts[(nifty_opts['expiry'] == week_exp) & (nifty_opts['strike'].between(nifty_spot - 1800, nifty_spot + 1800))]
+                month_opts = nifty_opts[(nifty_opts['expiry'] == month_exp) & (nifty_opts['strike'].between(nifty_spot - 2500, nifty_spot + 2500))]
                 
-                chunks = [symbols[i:i+250] for i in range(0, len(symbols), 250)]
+                syms_set = set(near_opts['tradingsymbol']).union(set(week_opts['tradingsymbol'])).union(set(month_opts['tradingsymbol']))
+                nfo_syms = [f"NFO:{s}" for s in syms_set]
+                
                 quotes = {}
-                for chunk in chunks:
-                    quotes.update(kite.quote(chunk))
+                for i in range(0, len(nfo_syms), 250):
+                    quotes.update(kite.quote(nfo_syms[i:i+250]))
                     
-                call_oi_map = {}
-                put_oi_map = {}
-                total_call_oi = 0
-                total_put_oi = 0
+                def parse_chain_data(sub_df):
+                    c_map, p_map, tc, tp = {}, {}, 0, 0
+                    for _, r in sub_df.iterrows():
+                        oi = quotes.get(f"NFO:{r['tradingsymbol']}", {}).get('oi', 0)
+                        stk = int(r['strike'])
+                        if r['instrument_type'] == 'CE':
+                            c_map[stk] = c_map.get(stk, 0) + oi
+                            tc += oi
+                        elif r['instrument_type'] == 'PE':
+                            p_map[stk] = p_map.get(stk, 0) + oi
+                            tp += oi
+                    pcr_val = round(tp / tc, 2) if tc > 0 else 1.0
+                    max_c = max(c_map, key=c_map.get) if c_map else 0
+                    max_p = max(p_map, key=p_map.get) if p_map else 0
+                    return pcr_val, max_c, max_p
                 
-                for idx, row in near_opts.iterrows():
-                    sym_key = f"NFO:{row['tradingsymbol']}"
-                    oi = quotes.get(sym_key, {}).get('oi', 0)
-                    strike = int(row['strike'])
-                    itype = row['instrument_type']
-                    
-                    if itype == 'CE':
-                        call_oi_map[strike] = call_oi_map.get(strike, 0) + oi
-                        total_call_oi += oi
-                    elif itype == 'PE':
-                        put_oi_map[strike] = put_oi_map.get(strike, 0) + oi
-                        total_put_oi += oi
-                        
-                if total_call_oi > 0:
-                    pcr = round(total_put_oi / total_call_oi, 2)
-                    
-                if call_oi_map:
-                    max_call_strike = max(call_oi_map, key=call_oi_map.get)
-                if put_oi_map:
-                    max_put_strike = max(put_oi_map, key=put_oi_map.get)
-                    
+                pcr, max_call_strike, max_put_strike = parse_chain_data(near_opts)
+                weekly_pcr, weekly_max_call, weekly_max_put = parse_chain_data(week_opts)
+                monthly_pcr, monthly_max_call, monthly_max_put = parse_chain_data(month_opts)
+                
                 # Estimate GIFT Nifty premium (approx +45 pts over spot based on futures basis)
                 gift_nifty = round(nifty_spot + 45.0, 2)
                 zerodha_connected = True
@@ -143,56 +181,42 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
             "last_updated_time": None
         }
 
-    # Calculate Derivatives Speedometer Sentiment Score (-100 to +100)
-    # 1. PCR Score (-40 to +40)
-    if pcr >= 1.3:
-        pcr_score = 40
-    elif pcr >= 1.15:
-        pcr_score = 25
-    elif pcr >= 1.0:
-        pcr_score = 10
-    elif pcr >= 0.85:
-        pcr_score = -10
-    elif pcr >= 0.7:
-        pcr_score = -25
-    else:
-        pcr_score = -40
+    # =========================================================================
+    # DECOUPLED MULTI-TIMEFRAME SPEEDOMETER SCORING ENGINE (Daily, Weekly, Monthly)
+    # =========================================================================
+    
+    # 1. DAILY SPEEDOMETER (Intraday & Swing Bias)
+    # PCR Score (-35 to +35)
+    if pcr >= 1.30: d_pcr_score = 35
+    elif pcr >= 1.15: d_pcr_score = 20
+    elif pcr >= 1.00: d_pcr_score = 10
+    elif pcr >= 0.85: d_pcr_score = -10
+    elif pcr >= 0.70: d_pcr_score = -20
+    else: d_pcr_score = -35
 
-    # 2. GIFT Nifty Basis Score (-30 to +30)
-    gift_basis = gift_nifty - nifty_spot
-    if gift_basis >= 60:
-        basis_score = 30
-    elif gift_basis >= 25:
-        basis_score = 15
-    elif gift_basis >= -15:
-        basis_score = 0
-    elif gift_basis >= -50:
-        basis_score = -20
-    else:
-        basis_score = -30
+    # Intraday Price & GIFT Basis Score (-30 to +30)
+    gift_basis = gift_nifty - nifty_spot if (gift_nifty and nifty_spot) else 0.0
+    if day_change_pct >= 0.8 or gift_basis >= 60: d_basis_score = 30
+    elif day_change_pct >= 0.3 or gift_basis >= 25: d_basis_score = 15
+    elif day_change_pct >= -0.3 and gift_basis >= -15: d_basis_score = 0
+    elif day_change_pct >= -0.8 or gift_basis >= -50: d_basis_score = -15
+    else: d_basis_score = -30
 
-    # 3. Structure Score (-20 to +20)
+    # Key Strike Structure Score (-20 to +20)
     if max_put_strike > 0 and max_call_strike > 0:
-        if nifty_spot >= max_call_strike:
-            struct_score = -15
-        elif nifty_spot <= max_put_strike:
-            struct_score = 15
-        else:
-            struct_score = 5 if pcr > 1.0 else -5
+        mid_strike = (max_put_strike + max_call_strike) / 2
+        d_struct_score = 15 if nifty_spot >= mid_strike else -15
     else:
-        struct_score = 0
+        d_struct_score = 0
 
-    # 4. VIX Risk Modifier (-10 to +10)
-    if india_vix > 18.0:
-        vix_score = -10
-    elif india_vix < 13.5:
-        vix_score = 10
-    else:
-        vix_score = 0
+    # India VIX Modifier (-15 to +15)
+    if india_vix < 13.5: d_vix_score = 15
+    elif india_vix < 16.0: d_vix_score = 5
+    elif india_vix < 18.5: d_vix_score = -5
+    else: d_vix_score = -15
 
-    total_score = max(-100, min(100, pcr_score + basis_score + struct_score + vix_score))
+    total_score = max(-100, min(100, d_pcr_score + d_basis_score + d_struct_score + d_vix_score))
     needle_angle = round((total_score / 100.0) * 90.0, 1)
-
     if total_score >= 25:
         day_verdict = "BULL DAY 🐂"
         simple_verdict = "Bull Day"
@@ -203,11 +227,33 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
         day_verdict = "NEUTRAL DAY ⚖️"
         simple_verdict = "Neutral Day"
 
-    # Weekly & Monthly Trend Derivatives Calculation
-    weekly_pcr = round(pcr * 1.05, 2) if pcr > 0 else 1.15
-    weekly_max_call = max_call_strike + 200 if max_call_strike > 0 else 25200
-    weekly_max_put = max_put_strike - 200 if max_put_strike > 0 else 24600
-    weekly_score = max(-100, min(100, total_score + 10 if total_score >= 0 else total_score - 10))
+    # 2. WEEKLY SPEEDOMETER (1-Week Trend Decoupled)
+    # 5-day net price change score (-40 to +40)
+    if week_change_pct >= 2.0: w_ret_score = 40
+    elif week_change_pct >= 1.0: w_ret_score = 25
+    elif week_change_pct >= 0.2: w_ret_score = 10
+    elif week_change_pct >= -0.2: w_ret_score = 0
+    elif week_change_pct >= -1.0: w_ret_score = -15
+    elif week_change_pct >= -2.0: w_ret_score = -25
+    else: w_ret_score = -40
+
+    # Weekly Moving Average Structure: EMA 5 & EMA 20 (-30 to +30)
+    if nifty_spot >= ema_5 and nifty_spot >= ema_20: w_ma_score = 30
+    elif nifty_spot >= ema_20: w_ma_score = 10
+    elif nifty_spot >= ema_5: w_ma_score = -10
+    else: w_ma_score = -30
+
+    # Next-Week Options PCR (-20 to +20)
+    if weekly_pcr >= 1.25: w_pcr_score = 20
+    elif weekly_pcr >= 1.05: w_pcr_score = 10
+    elif weekly_pcr >= 0.85: w_pcr_score = 0
+    elif weekly_pcr >= 0.70: w_pcr_score = -10
+    else: w_pcr_score = -20
+
+    # Weekly Strike Wall Structure (-10 to +10)
+    w_struct_score = 10 if (weekly_max_call > 0 and nifty_spot >= (weekly_max_call + weekly_max_put)/2) else -10
+
+    weekly_score = max(-100, min(100, w_ret_score + w_ma_score + w_pcr_score + w_struct_score))
     weekly_needle_angle = round((weekly_score / 100.0) * 90.0, 1)
     if weekly_score >= 25:
         weekly_verdict = "BULL WEEK 🐂"
@@ -216,10 +262,33 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
     else:
         weekly_verdict = "NEUTRAL WEEK ⚖️"
 
-    monthly_pcr = round(pcr * 1.12, 2) if pcr > 0 else 1.25
-    monthly_max_call = max_call_strike + 500 if max_call_strike > 0 else 25500
-    monthly_max_put = max_put_strike - 500 if max_put_strike > 0 else 24000
-    monthly_score = max(-100, min(100, total_score + 20 if total_score >= 0 else total_score - 20))
+    # 3. MONTHLY SPEEDOMETER (1-Month Macro Regime Decoupled)
+    # 21-day net price change score (-40 to +40)
+    if month_change_pct >= 3.5: m_ret_score = 40
+    elif month_change_pct >= 1.5: m_ret_score = 25
+    elif month_change_pct >= 0.3: m_ret_score = 10
+    elif month_change_pct >= -0.3: m_ret_score = 0
+    elif month_change_pct >= -1.5: m_ret_score = -15
+    elif month_change_pct >= -3.5: m_ret_score = -25
+    else: m_ret_score = -40
+
+    # Macro SMA 50 & 200 Structure (-30 to +30)
+    if nifty_spot >= sma_50 and nifty_spot >= sma_200: m_ma_score = 30
+    elif nifty_spot >= sma_50: m_ma_score = 15
+    elif nifty_spot >= sma_200: m_ma_score = -10
+    else: m_ma_score = -30
+
+    # Monthly Expiry Options PCR (-20 to +20)
+    if monthly_pcr >= 1.30: m_pcr_score = 20
+    elif monthly_pcr >= 1.10: m_pcr_score = 10
+    elif monthly_pcr >= 0.90: m_pcr_score = 0
+    elif monthly_pcr >= 0.75: m_pcr_score = -10
+    else: m_pcr_score = -20
+
+    # Monthly Support Floor (-10 to +10)
+    m_struct_score = 10 if (monthly_max_put > 0 and nifty_spot >= monthly_max_put) else -10
+
+    monthly_score = max(-100, min(100, m_ret_score + m_ma_score + m_pcr_score + m_struct_score))
     monthly_needle_angle = round((monthly_score / 100.0) * 90.0, 1)
     if monthly_score >= 25:
         monthly_verdict = "BULL MONTH 🐂"
@@ -228,59 +297,6 @@ def analyze_nse_derivatives(force_grok: bool = False, force_refresh: bool = Fals
     else:
         monthly_verdict = "NEUTRAL MONTH ⚖️"
 
-    if zerodha_connected and 'expiries' in locals() and len(expiries) > 1:
-        try:
-            w_exp = expiries[min(1, len(expiries) - 1)]
-            w_opts = nifty_opts[(nifty_opts['expiry'] == w_exp) & (nifty_opts['strike'].between(nifty_spot - 1800, nifty_spot + 1800))]
-            w_syms = [f"NFO:{s}" for s in w_opts['tradingsymbol'].tolist()]
-            w_quotes = {}
-            for chunk in [w_syms[i:i+250] for i in range(0, len(w_syms), 250)]:
-                w_quotes.update(kite.quote(chunk))
-            w_c_map, w_p_map, w_tc, w_tp = {}, {}, 0, 0
-            for idx, r in w_opts.iterrows():
-                oi = w_quotes.get(f"NFO:{r['tradingsymbol']}", {}).get('oi', 0)
-                stk = int(r['strike'])
-                if r['instrument_type'] == 'CE':
-                    w_c_map[stk] = w_c_map.get(stk, 0) + oi
-                    w_tc += oi
-                elif r['instrument_type'] == 'PE':
-                    w_p_map[stk] = w_p_map.get(stk, 0) + oi
-                    w_tp += oi
-            if w_tc > 0:
-                weekly_pcr = round(w_tp / w_tc, 2)
-            if w_c_map:
-                weekly_max_call = max(w_c_map, key=w_c_map.get)
-            if w_p_map:
-                weekly_max_put = max(w_p_map, key=w_p_map.get)
-        except Exception as e:
-            print(f"[DERIVATIVES] Weekly expiry fetch note: {e}")
-
-        try:
-            m_exp = expiries[-1]
-            m_opts = nifty_opts[(nifty_opts['expiry'] == m_exp) & (nifty_opts['strike'].between(nifty_spot - 2500, nifty_spot + 2500))]
-            m_syms = [f"NFO:{s}" for s in m_opts['tradingsymbol'].tolist()]
-            m_quotes = {}
-            for chunk in [m_syms[i:i+250] for i in range(0, len(m_syms), 250)]:
-                m_quotes.update(kite.quote(chunk))
-            m_c_map, m_p_map, m_tc, m_tp = {}, {}, 0, 0
-            for idx, r in m_opts.iterrows():
-                oi = m_quotes.get(f"NFO:{r['tradingsymbol']}", {}).get('oi', 0)
-                stk = int(r['strike'])
-                if r['instrument_type'] == 'CE':
-                    m_c_map[stk] = m_c_map.get(stk, 0) + oi
-                    m_tc += oi
-                elif r['instrument_type'] == 'PE':
-                    m_p_map[stk] = m_p_map.get(stk, 0) + oi
-                    m_tp += oi
-            if m_tc > 0:
-                monthly_pcr = round(m_tp / m_tc, 2)
-            if m_c_map:
-                monthly_max_call = max(m_c_map, key=m_c_map.get)
-            if m_p_map:
-                monthly_max_put = max(m_p_map, key=m_p_map.get)
-        except Exception as e:
-            print(f"[DERIVATIVES] Monthly expiry fetch note: {e}")
-            
     news_summary = (
         "US Fed rate cut expectations and strong FII inflows support market sentiment. "
         "Global Asian markets trading steady while domestic crude prices remain range-bound."
@@ -403,13 +419,29 @@ Format output strictly as:
         "needle_angle": needle_angle,
         "day_verdict": day_verdict,
         "verdict": simple_verdict,
+        "day_change_pct": day_change_pct,
+        "daily": {
+            "pcr": pcr,
+            "sentiment_score": total_score,
+            "needle_angle": needle_angle,
+            "verdict": day_verdict,
+            "max_call_strike": max_call_strike,
+            "max_put_strike": max_put_strike,
+            "change_pct": day_change_pct,
+            "prev_close": prev_close
+        },
         "weekly": {
             "pcr": weekly_pcr,
             "sentiment_score": weekly_score,
             "needle_angle": weekly_needle_angle,
             "verdict": weekly_verdict,
             "max_call_strike": weekly_max_call,
-            "max_put_strike": weekly_max_put
+            "max_put_strike": weekly_max_put,
+            "change_pct": week_change_pct,
+            "ema_5": round(ema_5, 1),
+            "ema_20": round(ema_20, 1),
+            "above_20_ema": nifty_spot >= ema_20,
+            "week_ago_close": week_ago_close
         },
         "monthly": {
             "pcr": monthly_pcr,
@@ -417,7 +449,13 @@ Format output strictly as:
             "needle_angle": monthly_needle_angle,
             "verdict": monthly_verdict,
             "max_call_strike": monthly_max_call,
-            "max_put_strike": monthly_max_put
+            "max_put_strike": monthly_max_put,
+            "change_pct": month_change_pct,
+            "sma_50": round(sma_50, 1),
+            "sma_200": round(sma_200, 1),
+            "above_50_sma": nifty_spot >= sma_50,
+            "above_200_sma": nifty_spot >= sma_200,
+            "month_ago_close": month_ago_close
         },
         "news_summary": news_summary,
         "predicted_nifty_change": predicted_nifty_change,
